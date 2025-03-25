@@ -12,26 +12,26 @@
 
 // #define SPI_DRIVER_SELECT 3
 // #define SD_FAT_TYPE 3
+#define DISABLE_FS_H_WARNING
 
 #include "OpenKNX.h"
-#include <SPI.h>
-#include <sdfat.h>
 #include <SD.h>
+#include <SPI.h>
+#include <SdFat.h>
 
 #define SDCardModule_Display_Name "SDCardModule"
 #define SDCardModule_Display_Version "0.0.1"
 
-class SDCardModule : public OpenKNX::Module {
-public:
-
-    
-    //SPIClass SPI1(HSPI);
-    //SoftSpiDriver<PIN_SDCARD_MISO, PIN_SDCARD_MOSI, PIN_SDCARD_SCK> softSpi;
-   // #define SD_CONFIG SdSpiConfig(PIN_SDCARD_CS, SDCARD_SPI_INTERFACE, SD_SCK_MHZ(0), &SPI1)
+class SDCardModule : public OpenKNX::Module
+{
+  public:
+    // SPIClass SPI1(HSPI);
+    // SoftSpiDriver<PIN_SDCARD_MISO, PIN_SDCARD_MOSI, PIN_SDCARD_SCK> softSpi;
+    // #define SD_CONFIG SdSpiConfig(PIN_SDCARD_CS, SDCARD_SPI_INTERFACE, SD_SCK_MHZ(0), &SPI1)
     void init();
     void setup(bool configured) override;
     void loop(bool configured) override;
-    //void processInputKo(GroupObject &ko) override;
+    // void processInputKo(GroupObject &ko) override;
     void showHelp() override;
     bool processCommand(const std::string command, bool diagnose) override;
 
@@ -57,10 +57,15 @@ public:
 
     inline const std::string name() { return SDCardModule_Display_Name; }
     inline const std::string version() { return SDCardModule_Display_Version; }
-private:
-   
+
+  private:
+    void SD_Mount();
+    // SPIClass SPI_SD(HSPI);
+    uint32_t _cardDetectTimer = 0; // Timer for card detection
+    bool _cardInserted = false;    // Card inserted flag
+
     SdFs sd;
-    //Fsfile file;
+    // Fsfile file;
     uint8_t chipSelectPin;
     bool mounted;
 };

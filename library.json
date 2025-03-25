@@ -1,0 +1,18 @@
+{
+  "name": "OFM-SDCard",
+  "version": "0.0.1",
+  "description": "OFM-SDCard is a library to access SD cards.",
+  "homepage": "https://openknx.de",
+  "authors": {
+    "name": "Erkan Çolak",
+    "email": "erkan@colak.de",
+    "maintainer": true
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/OpenKNX/OFM-SDCard.git"
+  },
+  "dependencies": {
+    "greiman/SdFat": "^2.3.0"
+  }
+}

@@ -22,6 +22,29 @@
 #define SDCardModule_Display_Name "SDCardModule"
 #define SDCardModule_Display_Version "0.0.1"
 
+struct FileInfo
+{
+    size_t size;
+    size_t blocksize;
+    time_t ctime;
+    time_t atime;
+    bool isDir;
+};
+
+struct BootSectorInfo
+{
+    uint16_t bytesPerSector;
+    uint8_t sectorsPerCluster;
+    uint16_t reservedSectors;
+    uint8_t numberOfFATs;
+    uint32_t totalSectors;
+    uint32_t fatSize;
+    uint32_t rootDirCluster;
+    std::string fileSystemType;
+    std::string volumeLabel;
+    bool isValid = false;
+};
+
 class SDCardModule : public OpenKNX::Module
 {
   public:
@@ -41,7 +64,7 @@ class SDCardModule : public OpenKNX::Module
     bool isMounted();
     bool format();
     bool info();
-    bool Statistics(const String path);
+    bool Statistics(const char *path, FileInfo &info);
 
     FsFile open(const char *path, const char *mode);
     bool createFile(const char *path);
@@ -50,6 +73,7 @@ class SDCardModule : public OpenKNX::Module
     size_t read(const char *path, uint8_t *buffer, size_t size);
     size_t write(const char *path, const uint8_t *buffer, size_t size);
     bool rename(const char *oldPath, const char *newPath);
+    size_t append(const char *path, const uint8_t *buffer, size_t size);
 
     bool mkdir(const char *path);
     bool rmdir(const char *path);
@@ -57,17 +81,28 @@ class SDCardModule : public OpenKNX::Module
 
     inline const std::string name() { return SDCardModule_Display_Name; }
     inline const std::string version() { return SDCardModule_Display_Version; }
+    void Mount();
+    bool Unmount(bool force = false);
 
   private:
-    void SD_Mount();
+    void lowLevelFormat();
+    void quickFormat();
+    void readPartitionTable();
+    void readGPT();
+    const char* formatSize(uint64_t bytes);
+    void getSDCardUsage(uint64_t &freeSpace, uint64_t &usedSpace);
+    uint64_t getSDCardSize();
+
+    time_t fatDateTimeToUnix(uint16_t fatDate, uint16_t fatTime);
+    BootSectorInfo getBootSectorInfo(int fsType);
     // SPIClass SPI_SD(HSPI);
     uint32_t _cardDetectTimer = 0; // Timer for card detection
+    uint32_t _cardMountTimer = 0; // Delay for card mount
     bool _cardInserted = false;    // Card inserted flag
-
-    SdFs sd;
-    // Fsfile file;
-    uint8_t chipSelectPin;
-    bool mounted;
+    bool _mountTimerStarted = false;
+    SdFs _sd;
+    uint8_t _chipSelectPin;
+    bool _mounted;
 };
 
 extern SDCardModule sdCardModule;

@@ -1,32 +1,45 @@
-#pragma once
+#ifdef OPENKNX_SD_CARD_MODULE_ENABLE
+    #pragma once
 /**
  * @file        SDCardModule.h
  * @brief       This module offers file statistics and filesystem information
  *              for SD cards, designed for seamless integration with OpenKNX.
- *              Based on the SdFat library.
+ *              Supports FAT16, FAT32, and exFAT filesystems.
+ *              Supported platforms:
+ *              - RP2040/RP2350: Only FAT16 and FAT32 are supported on RP2040. exFAT is not due to PSRAM limitations.
+ *              - ESP32: ESP32 supports FAT16, FAT32, and exFAT.
  * @author      Erkan Çolak
  * @version     0.0.1
  * @date        2024-03-25
  * @copyright   Copyright (c) 2025, Érkan Çolak
-
+ *
  */
 
-// Full documentation for the SdFat library configuration can be found at:
-// https://github.com/greiman/SdFat/blob/master/src/SdFatConfig.h
-//
-// #define SPI_DRIVER_SELECT 3
-// #define SD_FAT_TYPE 3
-#define DISABLE_FS_H_WARNING
-#define USE_LONG_FILE_NAMES 1
-#define USE_UTF8_LONG_NAMES 1
+    #include "OpenKNX.h"
+    #include <SPI.h>
+    #ifdef ARDUINO_ARCH_RP2040
+        #include <SDFS.h>
+    #elif (ARDUINO_ARCH_ESP32)
+        #define DISABLE_FS_H_WARNING
+        // Full documentation for the SdFat library configuration can be found at:
+        // https://github.com/greiman/SdFat/blob/master/src/SdFatConfig.h
+        #include <SdFat.h>
+    #elif
+        #error "Unsupported architecture"
+    #endif
 
-#include "OpenKNX.h"
-#include <SD.h>
-#include <SPI.h>
-#include <SdFat.h>
+    #ifdef ARDUINO_ARCH_RP2040 // Only FAT16 and FAT32 are supported on RP2040. exFAT is not due to PSRAM limitations
+        #define FSFILE File32
+        #define SDFAT_ SdFat
+        #define FSVOlUME FatVolume
+    #elif defined(ARDUINO_ARCH_ESP32) // ESP32 supports FAT16, FAT32, and exFAT.
+        #define FSFILE FsFile
+        #define SDFAT_ SdFat
+        #define FSVOlUME FsVolume
+    #endif
 
-#define SDCardModule_Display_Name "SDCardModule"
-#define SDCardModule_Display_Version "0.0.1"
+    #define SDCardModule_Display_Name "SDCardModule"
+    #define SDCardModule_Display_Version "0.0.1"
 
 struct FileInfo
 {
@@ -84,7 +97,7 @@ class SDCardModule : public OpenKNX::Module
     bool info();
     bool Statistics(const char *folder, const char *path, FileInfo &info);
 
-    FsFile open(const char *path, const char *mode);
+    FSFILE open(const char *path, const char *mode);
     bool createFile(const char *path);
     bool remove(const char *path);
     bool exists(const char *path);
@@ -106,16 +119,16 @@ class SDCardModule : public OpenKNX::Module
     uint64_t getSDCardSize();
     String getCardType();
     String getFsType();
-    String getManufacturer(cid_t cid=cid_t());
+    String getManufacturer(cid_t cid = cid_t());
     String getVolumeLabel();
+    String getPartitionType(uint8_t partitionType);
     bool isCardInserted();
 
   private:
     bool _mount(); // No direct call, only for internal use
     void lowLevelFormat();
     void quickFormat();
-    void readPartitionTable();
-    void readGPT();
+    void readPartitionInfo();
     const char *formatSize(uint64_t bytes);
     void getSDCardUsage(uint64_t &freeSpace, uint64_t &usedSpace);
 
@@ -129,10 +142,11 @@ class SDCardModule : public OpenKNX::Module
     bool _cardInserted = false;             // Card inserted flag
     bool _mountTimerStarted = false;
 
-    SdFs _sd;
+    SDFAT_ _sd;
     uint8_t _chipSelectPin;
     bool _mounted;
-    // SPIClass SPI_SD(HSPI);
 };
 
 extern SDCardModule sdCardModule;
+
+#endif // OPENKNX_SD_CARD_MODULE_ENABLE

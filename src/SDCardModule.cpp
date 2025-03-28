@@ -1,7 +1,6 @@
 #include "SDCardModule.h"
 
 // ToDo: Dynamic HardwareConfig for the SD-Card
-
 SPIClass SPI_SD(HSPI);
 SdSpiConfig sdConfig(PIN_SDCARD_CS, DEDICATED_SPI, SD_SCK_MHZ(50), &SPI_SD);
 
@@ -36,98 +35,47 @@ void SDCardModule::init()
  */
 void SDCardModule::setup(bool configured)
 {
-    logDebugP("Setting up...");
+    logDebugP("Setup...");
     _mounted = false;
-    // Read the card detect pin
-    _cardInserted = digitalRead(PIN_SDCARD_CD) == LOW; // LOW means card is inserted. Since we are using internal pull-up resistor, we need to check for LOW
-    if (!_cardInserted)
-    {
-        logInfoP("No SD card inserted.");
-        return;
-    }
-    else
-    {
-        logInfoP("SD card inserted. Mounting the SD card...");
-        Mount();
-    }
+    _cardInserted = false;
+    _mountStep = MOUNT_STEP_INIT;
 }
 
-/**
- * @brief Mount the SD-Card
- *
- */
-void SDCardModule::Mount()
-{
-    // ToDo: HardwareConfig for the SD-Card
-    SPI_SD.begin(PIN_SDCARD_SCK, PIN_SDCARD_MISO, PIN_SDCARD_MOSI, PIN_SDCARD_CS);
-    if (!_sd.begin(sdConfig))
-    {
-        logErrorP("Unable to detect the inserted SD card!");
-        logDebugP("Error code: %X (Data: %X)", _sd.card()->errorCode(), _sd.card()->errorData());
-        logErrorP("Please check the Format of the SD card! It must be FAT16, FAT32 or exFAT! formated!");
-        return;
-    }
-    else
-    {
-        logInfoP("Successfully mounted the SD card!");
-        _mounted = true;
-        info();
-    }
-}
-
-/**
- * @brief Unmount the SD-Card
- *
- * @param force will force the unmounting of the SD-Card and ignore the busy state
- * @return true if the SD-Card was unmounted successfully
- */
-bool SDCardModule::Unmount(bool force)
-{
-    if (!force && _sd.card()->isBusy())
-    {
-        logErrorP("SD-Card is busy. Cannot unmount the card! Please try again later.");
-        return false;
-    }
-    else
-    {
-        _sd.end();
-        logInfoP("SD-Card unmounted!");
-        SPI_SD.end();
-        logDebugP("SPI for SD-Card closed!");
-        _mounted = false;
-        return true;
-    }
-}
-
+/** */
 void SDCardModule::loop(bool configured)
 {
     if (delayCheck(_cardDetectTimer, 500)) // CHeck every 500ms for card detection
     {
         _cardDetectTimer = millis();
-        bool currentCardInserted = digitalRead(PIN_SDCARD_CD) == LOW; // ToDo: HardwareConfig for the SD-Card
-
+        bool currentCardInserted = isCardInserted();
         if (currentCardInserted != _cardInserted)
         {
             _cardInserted = currentCardInserted;
-
             if (_cardInserted)
             {
                 logInfoP("SD card inserted. Starting initialization...");
                 _cardMountTimer = millis();
+                _mountStep = MOUNT_STEP_INIT; // Reset the state machine
             }
             else
             {
                 logInfoP("SD card removed.");
-                Unmount(true); // Unmount the card and force it, since it is removed!
+                Unmount(true); // Force unmount the card
                 _cardMountTimer = 0;
+                _mountStep = MOUNT_STEP_INIT; // Reset the state machine
             }
         }
     }
-
     if (_cardInserted && _cardMountTimer > 0 && delayCheck(_cardMountTimer, 3000))
     {
-        Mount();
-        _cardMountTimer = 0;
+        if (!_mounted && delayCheck(_mountTimer, 1000)) // Check every 1s for mounting
+        {
+            if (_mount())
+            {
+                _cardMountTimer = 0; // Mount-Timer zurücksetzen
+            }
+            _mountTimer = millis(); // Reset timer for next check
+        }
     }
 }
 
@@ -135,7 +83,6 @@ void SDCardModule::showHelp()
 {
     openknx.console.printHelpLine("sdc", "SD Card Control Module. Use 'sdc ?' for more information.");
 }
-
 bool SDCardModule::processCommand(const std::string command, bool diagnose)
 {
     if (diagnose) return false;
@@ -175,6 +122,7 @@ bool SDCardModule::processCommand(const std::string command, bool diagnose)
         }
         else if (command.compare(4, 6, "format") == 0)
         {
+
             std::string answer = command.substr(10).c_str();
             if (answer.compare(" yes") == 0)
             {
@@ -189,10 +137,12 @@ bool SDCardModule::processCommand(const std::string command, bool diagnose)
         }
         else if (command.compare(4, 3, "llf") == 0)
         {
+
             lowLevelFormat();
         }
         else if (command.compare(4, 3, "rpt") == 0)
         {
+
             readPartitionTable();
         }
         else if (command.compare(4, 4, "rgpt") == 0)
@@ -201,11 +151,17 @@ bool SDCardModule::processCommand(const std::string command, bool diagnose)
         }
         else if (command.compare(4, 4, "qformat") == 0)
         {
+
             quickFormat();
         }
 
         else if (command.compare(4, 4, "add ") == 0)
         {
+            if (!isCardInserted() || !_mounted)
+            {
+                logErrorP("No SD card inserted or mounted!");
+                return false;
+            }
             String fileName = command.substr(8).c_str();
             if (fileName[0] != '/')
             {
@@ -224,9 +180,15 @@ bool SDCardModule::processCommand(const std::string command, bool diagnose)
         }
         else if (command.compare(4, 3, "ll ") == 0)
         {
+            if (!isCardInserted() || !_mounted)
+            {
+                logErrorP("No SD card inserted or mounted!");
+                return false;
+            }
             logInfoP("SD-Card Files:");
             String path = command.substr(7).c_str();
-            std::vector<String> files = ls(path.length() == 0 ? "/" : path.c_str());
+            path = path.length() == 0 ? "/" : path;
+            std::vector<String> files = getFileList(path.c_str());
             openknx.logger.begin();
             openknx.logger.log("");
             openknx.logger.color(CONSOLE_HEADLINE_COLOR);
@@ -246,7 +208,7 @@ bool SDCardModule::processCommand(const std::string command, bool diagnose)
             for (String file : files)
             {
                 FileInfo stat;
-                if (Statistics(file.c_str(), stat))
+                if (Statistics(path.c_str(), file.c_str(), stat))
                 {
                     if (stat.isDir)
                     {
@@ -268,7 +230,7 @@ bool SDCardModule::processCommand(const std::string command, bool diagnose)
             for (String dir : directories)
             {
                 FileInfo stat;
-                if (Statistics(dir.c_str(), stat))
+                if (Statistics(path.c_str(), dir.c_str(), stat))
                 {
                     const String type = "Dir";
                     char formattedTime[25];
@@ -294,7 +256,7 @@ bool SDCardModule::processCommand(const std::string command, bool diagnose)
             for (String file : regularFiles)
             {
                 FileInfo stat;
-                if (Statistics(file.c_str(), stat))
+                if (Statistics(path.c_str(), file.c_str(), stat))
                 {
                     const String type = "File";
                     char formattedTime[25];
@@ -304,7 +266,7 @@ bool SDCardModule::processCommand(const std::string command, bool diagnose)
                     openknx.logger.logWithValues("%-41s | %-12s | %-6s | %-20s",
                                                  // file.c_str(),
                                                  String((file.length() > 41) ? file.substring(0, 38) + "..." : file).c_str(),
-                                                 String(stat.size).c_str(), type.c_str(), formattedTime);
+                                                 String(formatSize((uint64_t)stat.size)).c_str(), type.c_str(), formattedTime);
                 }
                 else
                 {
@@ -320,7 +282,7 @@ bool SDCardModule::processCommand(const std::string command, bool diagnose)
             openknx.logger.logWithValues("%-20s %-20s | %-12s",
                                          String("Folders: " + String((unsigned long)CountedFoders, DEC)).c_str(),
                                          String("Files: " + String((unsigned long)(files.size() - CountedFoders), DEC)).c_str(),
-                                         String("Size: " + String((unsigned long)totalSize, DEC) + " bytes").c_str());
+                                         String("Size: " + String(formatSize((uint64_t)totalSize))).c_str());
             openknx.logger.log("----------------------------------------------------------------------------------------"); // 88 characters
 
             // FSInfo info;
@@ -345,7 +307,7 @@ bool SDCardModule::processCommand(const std::string command, bool diagnose)
         else if (command.compare(4, 3, "ls ") == 0)
         {
             String path = command.substr(7).c_str();
-            std::vector<String> files = ls(path.length() > 0 ? path.c_str() : "/");
+            std::vector<String> files = getFileList(path.length() > 0 ? path.c_str() : "/");
             for (String file : files)
             {
                 logInfoP("%s", file.c_str());
@@ -497,10 +459,163 @@ bool SDCardModule::processCommand(const std::string command, bool diagnose)
         bRet = false;
     }
     return bRet;
+} // end of processCommand
+
+/**
+ * @brief State machine to mount the SD-Card.
+ *
+ * This function implements a step-by-step process to initialize and mount the SD-Card.
+ * It ensures that the card is properly initialized, detected, and its volume is prepared for use.
+ * The function will return `true` once the card is successfully mounted, or `false` if the process is still ongoing or fails.
+ *
+ * **Important:** Do not call this function directly. Use the `Mount()` function instead to trigger the mounting process.
+ *
+ * ### State Machine Process:
+ * 1. **MOUNT_STEP_INIT**: Initialize the SPI interface for the SD-Card.
+ * 2. **MOUNT_STEP_DETECT**: Detect the presence of the SD-Card.
+ * 3. **MOUNT_STEP_CARD_BEGIN**: Start the SD-Card initialization process.
+ * 4. **MOUNT_STEP_VOLUME_BEGIN**: Initialize the volume (file system) on the SD-Card.
+ * 5. **MOUNT_STEP_FINISHED**: Successfully mount the SD-Card and reset the state machine.
+ * 6. **MOUNT_STEP_ERROR**: Handle errors during the mounting process.
+ *
+ * @return true if the SD-Card is successfully mounted.
+ * @return false if the SD-Card is not yet mounted or an error occurred.
+ */
+bool SDCardModule::_mount()
+{
+    if (_mountStep == MOUNT_ERROR_STATE && _cardInserted) return false;
+    switch (_mountStep)
+    {
+        case MOUNT_STEP_INIT:
+            logInfoP("Initializing SPI for SD-Card...");
+            SPI_SD.begin(PIN_SDCARD_SCK, PIN_SDCARD_MISO, PIN_SDCARD_MOSI, PIN_SDCARD_CS);
+            _mountStep = MOUNT_STEP_DETECT;
+            return false;
+
+        case MOUNT_STEP_DETECT:
+            if (!isCardInserted())
+            {
+                logErrorP("SD-Card is not inserted! Please insert the SD-Card and try again.");
+                _mountStep = MOUNT_STEP_ERROR;
+                return false;
+            }
+            _mountStep = MOUNT_STEP_CARD_BEGIN;
+            return false;
+
+        case MOUNT_STEP_CARD_BEGIN:
+            if (!_sd.cardBegin(sdConfig))
+            {
+                logErrorP("SD-Card initialization failed!");
+                _mountStep = MOUNT_STEP_ERROR;
+                return false;
+            }
+            logInfoP("SD-Card initialized.");
+            _mountStep = MOUNT_STEP_VOLUME_BEGIN;
+            return false;
+
+        case MOUNT_STEP_VOLUME_BEGIN:
+            if (!_sd.volumeBegin())
+            {
+                logErrorP("Volume initialization failed! Please check format (FAT16, FAT32, exFAT).");
+                _mountStep = MOUNT_STEP_ERROR;
+                return false;
+            }
+            logInfoP("Volume initialized.");
+            _mountStep = MOUNT_STEP_FINISHED;
+            return false;
+
+        case MOUNT_STEP_FINISHED:
+            _mounted = true;
+            _mountStep = MOUNT_STEP_INIT; // Reset the mount step
+            logInfoP("SD-Card successfully mounted!");
+            //logInfoP("Manufacturer: %s", getManufacturer().c_str());
+            //logInfoP("Type: %s", getCardType().c_str());
+            //logInfoP("FS Type: %s", getFsType().c_str());
+            //logInfoP("Size: %s", formatSize((uint64_t)_sd.card()->sectorCount() * 512));
+            info();
+            return true;
+
+        case MOUNT_STEP_ERROR:
+            logErrorP("Failed to mount the SD-Card!");
+            logErrorP("Error code: %X (Data: %X)", _sd.card()->errorCode(), _sd.card()->errorData());
+            logErrorP("Mounting aborted. SD-Card is in an error state. Remove and reinsert the card to retry.");
+            _mountStep = MOUNT_ERROR_STATE;
+            return true;
+
+        case MOUNT_ERROR_STATE:
+            return false;
+    }
+    return false;
+}
+
+/**
+ * @brief Unmount the SD-Card
+ *
+ * @param force will force the unmounting of the SD-Card and ignore the busy state
+ * @return true if the SD-Card was unmounted successfully
+ */
+bool SDCardModule::Unmount(bool force)
+{
+    if (!force && !_mounted)
+    {
+        logDebugP("SD-Card is not mounted!");
+        return false;
+    }
+
+    if (!force && _sd.card()->isBusy())
+    {
+        logErrorP("SD-Card is busy. Cannot unmount the card! Please try again later.");
+        return false;
+    }
+
+    _sd.end();
+    logInfoP("SD-Card unmounted!");
+    SPI_SD.end();
+    logDebugP("SPI for SD-Card closed!");
+    _mounted = false;
+    _mountStep = MOUNT_STEP_INIT; // Reset the mount step
+    _cardInserted = false;
+    return true;
+}
+
+/**
+ * @brief Mount the SD-Card - Triggers the mounting sequenc, if not mounted!
+ *
+ * @return true if remounting sequence was triggered
+ */
+bool SDCardModule::Mount()
+{
+    if (_mounted)
+    {
+        logDebugP("SD-Card is already mounted!");
+        return true;
+    }
+
+    // Reset settings to remount the card
+    _mounted = false;
+    _mountStep = MOUNT_STEP_INIT;
+    _cardInserted = false;
+    logInfoP("Remounting triggered...");
+    return true;
+}
+
+/**
+ * @brief Remount the SD-Card, which will force the card to be unmounted and mounted again
+ *
+ */
+void SDCardModule::ReMount()
+{
+    Unmount(true);
+    Mount();
 }
 
 BootSectorInfo SDCardModule::getBootSectorInfo(int fsType)
 {
+    if (!isCardInserted() || !_mounted)
+    {
+        logErrorP("No SD card inserted or mounted!");
+        return BootSectorInfo();
+    }
     uint8_t buffer[512];
     BootSectorInfo info;
 
@@ -595,15 +710,16 @@ bool SDCardModule::isMounted()
  */
 bool SDCardModule::format()
 {
-    // if (!_mounted) {
-    //    return false;
-    //    logInfoP("SD card is not _mounted! Only _mounted SD card can be formatted!");
-    // }
+    if (!isCardInserted())
+    {
+        logErrorP("No SD card inserted!");
+        return false;
+    }
     logInfoP("Formatting the SD card...");
     if (_sd.format())
     {
         logInfoP("SD card formatted successfully!");
-        Mount();
+        Unmount();
         return true;
     }
     else
@@ -613,8 +729,17 @@ bool SDCardModule::format()
     }
 }
 
+/**
+ * @brief Quick format the SD card with deleting the MBR
+ *
+ */
 void SDCardModule::quickFormat()
 {
+    if (!isCardInserted())
+    {
+        logErrorP("No SD card inserted!");
+        return;
+    }
     uint8_t emptyMBR[512] = {0};
     if (!_sd.card()->writeSector(0, emptyMBR))
     {
@@ -625,9 +750,12 @@ void SDCardModule::quickFormat()
     logInfoP("MBR deleted. Card must be repartitioned.");
 }
 
+/**
+ * @brief Low-level format the SD card
+ *        ATTENTION: This will erase all data on the SD card!
+ */
 void SDCardModule::lowLevelFormat()
 {
-    // Serial.println("WARNUNG: Low-Level-Formatierung wird gestartet!");
     logInfoP("WARNING: A low-level format will erase all data on the SD card!");
     uint8_t emptySector[512] = {0}; // Leerer Sektor mit 0x00
 
@@ -716,6 +844,10 @@ void SDCardModule::readGPT()
     }
 }
 
+/**
+ * @brief Show the SD card information on the console
+ *
+ */
 bool SDCardModule::info()
 {
     if (!_mounted) return false;
@@ -723,20 +855,13 @@ bool SDCardModule::info()
     openknx.logger.begin();
     openknx.logger.log(""); // Empty line for spacing
     openknx.logger.color(CONSOLE_HEADLINE_COLOR);
-    openknx.logger.log("============================= SD Card Information ==============================");
+    openknx.logger.log("============================= SD Card Information =============================");
     openknx.logger.color(0);
     cid_t cid;
     if (_sd.card()->readCID(&cid))
     {
-        const char *manufacturers[] = {"Unknown", "SanDisk", "Panasonic", "TDK", "SanDisk", "Samsung", "Kingston", "Transcend"};
-        openknx.logger.logWithValues("| Manufacturer ID        | %-50s |",
-                                     manufacturers[(cid.mid == 0x1B) ? 1 : (cid.mid == 0x01) ? 1
-                                                                       : (cid.mid == 0x02)   ? 2
-                                                                       : (cid.mid == 0x03)   ? 3
-                                                                       : (cid.mid == 0x3F)   ? 4
-                                                                       : (cid.mid == 0x4B)   ? 5
-                                                                       : (cid.mid == 0x5B)   ? 6
-                                                                                             : 0]);
+        openknx.logger.logWithValues("| Manufacturer ID        | %-50s |", getManufacturer(cid).c_str());
+
         std::string productName = "";
         for (int i = 0; i < 5; i++)
         {
@@ -752,8 +877,7 @@ bool SDCardModule::info()
     {
         openknx.logger.log("| Error                  | Unable to read CID data                          |");
     }
-    const char *cardTypeStr[] = {"Unknown", "SD (Standard)", "SDHC (High Capacity)", "SDXC (Extended Capacity)"};
-    openknx.logger.log("--------------------------------------------------------------------------------");
+    openknx.logger.log("-------------------------------------------------------------------------------");
 
     // BootSectorInfo info = getBootSectorInfo(_sd.fatType());
     // if (info.isValid)
@@ -767,39 +891,38 @@ bool SDCardModule::info()
     //     openknx.logger.logWithValues("| Root Directory Cluster  | %-50s |", String((unsigned long)info.rootDirCluster).c_str());
     //     openknx.logger.logWithValues("| File System Type        | %-50s |", info.fileSystemType.c_str());
     //     openknx.logger.logWithValues("| Volume Label            | %-50s |", info.volumeLabel.c_str());
-    //     openknx.logger.log("--------------------------------------------------------------------------------");
+    //     openknx.logger.log("-------------------------------------------------------------------------------");
     // }
-    //  **MB / GB Automatisch setzen**
 
-    //
-    openknx.logger.logWithValues("| Card Size              | %-50s |", formatSize((uint64_t)_sd.card()->sectorCount() * 512));
-    openknx.logger.logWithValues("| Max Speed              | %-50s |", String(SPI_FULL_SPEED).c_str());
-    openknx.logger.logWithValues("| Card Type              | %-50s |", cardTypeStr[_sd.card()->type()] ? cardTypeStr[_sd.card()->type()] : "Unknown Type");
-    openknx.logger.logWithValues("| File System            | %-50s |", _sd.fatType() == FAT_TYPE_EXFAT ? "exFAT" : _sd.fatType() == FAT_TYPE_FAT32 ? "FAT32"
-                                                                                                               : _sd.fatType() == FAT_TYPE_FAT16   ? "FAT16"
-                                                                                                                                                   : "Unknown");
-    // openknx.logger.log("--------------------------------------------------------------------------------");
-    openknx.logger.color(CONSOLE_HEADLINE_COLOR);
-    // uint64_t freeBytes, usedBytes;
-    //// EINMALIG SD-INFO LADEN (um CPU-Blockaden zu vermeiden!)
-    // uint64_t totalBytes = getSDCardSize();
-    // yield(); // Ermöglicht anderen Tasks weiterzulaufen (Watchdog-Reset)
-    // getSDCardUsage(freeBytes, usedBytes);
-    // yield(); // Wieder CPU freigeben
-    // float usedPercentage = (float)usedBytes * 100.0f / totalBytes;
-    // float freePercentage = 100.0f - usedPercentage;
-    // int usedBarLength = (int)(usedPercentage * 0.5f);
-    // int freeBarLength = 50 - usedBarLength;
-    // char usedBar[51] = {0}; // 50 Zeichen + Nullterminierung
-    // char freeBar[51] = {0};
-    // memset(usedBar, '=', usedBarLength);
-    // memset(freeBar, '=', freeBarLength);
-    // openknx.logger.logWithValues("Used: %-20s [%-50s] %.1f%%", formatSize(usedBytes), usedBar, usedPercentage);
-    // openknx.logger.logWithValues("Free: %-20s [%-50s] %.1f%%", formatSize(freeBytes), freeBar, freePercentage);
-    // openknx.logger.logWithValues("Total: %-20s", formatSize(totalBytes));
-    openknx.logger.log("--------------------------------------------------------------------------------");
-    openknx.logger.color(0);
+    uint64_t freeBytes, usedBytes, totalBytes = getSDCardSize();
+    if (totalBytes > 0)
+    {
+        getSDCardUsage(freeBytes, usedBytes);
+        float usedPercentage = (float)usedBytes * 100.0f / totalBytes;
+        float freePercentage = 100.0f - usedPercentage;
+        int usedBarLength = (int)(usedPercentage * 0.5f);
+        int freeBarLength = 50 - usedBarLength;
+        char usedBar[51] = {0};
+        char freeBar[51] = {0};
 
+        memset(usedBar, '=', usedBarLength);
+        memset(freeBar, '=', freeBarLength);
+
+        openknx.logger.logWithValues("| Card Type              | %-50s |", getCardType().c_str());
+        openknx.logger.logWithValues("| File System            | %-50s |", getFsType().c_str());
+        openknx.logger.logWithValues("| Card capacity          | %-50s |", formatSize(totalBytes));
+        openknx.logger.log("-------------------------------------------------------------------------------");
+        openknx.logger.color(CONSOLE_HEADLINE_COLOR);
+        openknx.logger.logWithValues("| Used: %-10s [%-50s] %.2f%%", formatSize(usedBytes), usedBar, usedPercentage);
+        openknx.logger.logWithValues("| Free: %-10s [%-50s] %.2f%%", formatSize(freeBytes), freeBar, freePercentage);
+
+        openknx.logger.color(0);
+        openknx.logger.log("-------------------------------------------------------------------------------");
+    }
+    else
+    {
+        openknx.logger.log("| Error                  | Unable to read SD card size                      |");
+    }
     return true;
 }
 
@@ -950,17 +1073,39 @@ size_t SDCardModule::append(const char *path, const uint8_t *buffer, size_t size
     return bytesAppended;
 }
 
+/** 
+ * @brief Create a directory.
+ *
+ * This function creates a directory at the specified path.
+ *
+ * @param path The path to the directory.
+ * @return True if the directory is successfully created, false otherwise.
+ */
 bool SDCardModule::mkdir(const char *path)
 {
     return _sd.mkdir(path);
 }
 
+/** 
+ * @brief Remove a directory.
+ *
+ * This function removes a directory at the specified path.
+ *
+ * @param path The path to the directory.
+ * @return True if the directory is successfully removed, false otherwise.
+ */
 bool SDCardModule::rmdir(const char *path)
 {
     return _sd.rmdir(path);
 }
 
-std::vector<String> SDCardModule::ls(const char *path)
+/** 
+ * @brief Get the list of files in a directory.
+ *
+ * @param path The path to the directory.
+ * @return A vector of strings containing the list of files in the directory.
+ */
+std::vector<String> SDCardModule::getFileList(const char *path)
 {
     std::vector<String> fileList;
     FsFile dir = _sd.open(path);
@@ -976,7 +1121,15 @@ std::vector<String> SDCardModule::ls(const char *path)
     return fileList;
 }
 
-// **Funktion zur Umwandlung von FAT-Datum/Zeit in Unix-Zeit (time_t)**
+/**
+ * @brief Convert FAT date and time to Unix timestamp.
+ *
+ * This function converts a FAT date and time to a Unix timestamp.
+ *
+ * @param fatDate The FAT date.
+ * @param fatTime The FAT time.
+ * @return The Unix timestamp.
+ */
 time_t SDCardModule::fatDateTimeToUnix(uint16_t fatDate, uint16_t fatTime)
 {
     struct tm t = {};
@@ -989,6 +1142,7 @@ time_t SDCardModule::fatDateTimeToUnix(uint16_t fatDate, uint16_t fatTime)
 
     return mktime(&t); // Unix-Timestamp erstellen
 }
+
 /**
  * @brief Retrieves file statistics.
  *
@@ -998,13 +1152,13 @@ time_t SDCardModule::fatDateTimeToUnix(uint16_t fatDate, uint16_t fatTime)
  * @param info The structure to store the file statistics.
  * @return True if the statistics are successfully retrieved, false otherwise.
  */
-
-bool SDCardModule::Statistics(const char *path, FileInfo &info)
+bool SDCardModule::Statistics(const char *folder, const char *path, FileInfo &info)
 {
     FsFile file;
-    if (!file.open(path, O_RDONLY))
+    String fullPath = String(folder) + "/" + String(path);
+    if (!file.open(fullPath.c_str(), O_RDONLY))
     {
-        Serial.println("Fehler: Datei konnte nicht geöffnet werden!");
+        logErrorP("Failed to open the file: %s", path);
         return false;
     }
     uint16_t createDate, createTime, accessDate, accessTime;
@@ -1021,6 +1175,13 @@ bool SDCardModule::Statistics(const char *path, FileInfo &info)
     return true;
 }
 
+/**
+ * @brief Get the size of the SD card.
+ *
+ * This function retrieves the size of the SD card in bytes.
+ *
+ * @return The size of the SD card in bytes.
+ */
 uint64_t SDCardModule::getSDCardSize()
 {
     uint32_t sectorCount = _sd.card()->sectorCount(); // Anzahl der Sektoren
@@ -1028,6 +1189,14 @@ uint64_t SDCardModule::getSDCardSize()
     return (uint64_t)sectorCount * sectorSize;        // Größe in Bytes
 }
 
+/**
+ * @brief Get the usage of the SD card.
+ *
+ * This function retrieves the usage of the SD card in terms of free and used space.
+ *
+ * @param freeSpace The variable to store the free space on the SD card.
+ * @param usedSpace The variable to store the used space on the SD card.
+ */
 void SDCardModule::getSDCardUsage(uint64_t &freeSpace, uint64_t &usedSpace)
 {
     FsVolume *vol = _sd.vol();
@@ -1039,21 +1208,77 @@ void SDCardModule::getSDCardUsage(uint64_t &freeSpace, uint64_t &usedSpace)
     usedSpace = ((uint64_t)totalClusters * clusterSize) - freeSpace; // Belegter Speicher
 }
 
+/**
+ * @brief Format a size in bytes to a human-readable format.
+ *
+ * This function formats a size in bytes to a human-readable format (e.g., KB, MB, GB, etc.).
+ *
+ * @param bytes The size in bytes.
+ * @return A string representing the formatted size.
+ */
 const char *SDCardModule::formatSize(uint64_t bytes)
 {
     static char output[20];
     const char *units[] = {"B", "KB", "MB", "GB", "TB"};
-    float size = bytes;
     int unitIndex = 0;
 
-    while (size >= 1024.0f && unitIndex < 4)
-    {
-        size /= 1024.0f;
-        unitIndex++;
-    }
+    double size = bytes;
+    for (; size >= 1024.0 && unitIndex < 4; size /= 1024.0, ++unitIndex)
+        ;
 
-    snprintf(output, sizeof(output), "%.1f %s", size, units[unitIndex]);
+    snprintf(output, sizeof(output), "%.2f %s", size, units[unitIndex]);
     return output;
+}
+
+/**
+ * @brief Get the type of the SD card.
+ *
+ * @return The type of the SD card.
+ */
+String SDCardModule::getCardType()
+{
+    const char *cardTypeStr[] = {"Unknown", "SD (Standard)", "SDHC (High Capacity)", "SDXC (Extended Capacity)"};
+    return cardTypeStr[_sd.card()->type()] ? cardTypeStr[_sd.card()->type()] : "Unknown Type";
+}
+
+/**
+ * @brief Get the file system type of the SD card.
+ *
+ * @return The file system type of the SD card.
+ */
+String SDCardModule::getFsType()
+{
+    if (!_mounted) return "error";
+    return _sd.fatType() == FAT_TYPE_EXFAT   ? "exFAT"
+           : _sd.fatType() == FAT_TYPE_FAT32 ? "FAT32"
+           : _sd.fatType() == FAT_TYPE_FAT16 ? "FAT16"
+                                             : "Unknown";
+}
+
+/**
+ * @brief Get the manufacturer of the SD card.
+ *
+ * @return The manufacturer of the SD card.
+ */
+String SDCardModule::getManufacturer(cid_t cid)
+{
+    static const std::unordered_map<uint8_t, std::string> manufacturers = {
+        {0x01, "Panasonic"}, {0x41, "ADATA"}, {0x75, "Cactus"}, {0x95, "Extrememory"}, {0x02, "Toshiba"}, {0x45, "Patriot"}, {0x80, "OCZ"}, {0x96, "Dane-Elec"}, {0x03, "SanDisk"}, {0x50, "PNY"}, {0x85, "Kingmax"}, {0x97, "Jenoptik"}, {0x1B, "Samsung"}, {0x55, "Verbatim"}, {0x90, "Apacer"}, {0x98, "Platinum"}, {0x1D, "Kingston"}, {0x5A, "Integral"}, {0x91, "Hama"}, {0x99, "Navigon"}, {0x1E, "Transcend"}, {0x60, "Emtec"}, {0x92, "TakeMS"}, {0xA1, "CDA GmbH"}, {0x28, "Lexar"}, {0x65, "GoodRAM"}, {0x93, "Infineon"}, {0xA2, "ATP Electronics"}, {0x31, "Sony"}, {0x70, "Silicon Power"}, {0x94, "Mustang"}, {0xA3, "Delkin Devices"}};
+    cid_t _cid = cid;
+    if (_cid.mid == 0 && !_sd.card()->readCID(&_cid)) return "Unknown";
+    auto it = manufacturers.find(_cid.mid);
+    return (it != manufacturers.end()) ? String(it->second.c_str()) : "Unknown";
+}
+
+/**
+ * @brief Check if the SD card is inserted.
+ *
+ * @return True if the SD card is inserted, false otherwise.
+ */
+bool SDCardModule::isCardInserted()
+{
+    // ToDo Hardware Config for CD Pin
+    return digitalRead(PIN_SDCARD_CD) == LOW;
 }
 
 SDCardModule sdCardModule(PIN_SDCARD_CS); // ToDo: CS Pin for SD card module ?, not obtain them from device configuration

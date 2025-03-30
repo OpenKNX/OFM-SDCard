@@ -28,14 +28,32 @@
         #error "Unsupported architecture"
     #endif
 
+    #define SDFAT_ SdFat
+
     #ifdef ARDUINO_ARCH_RP2040 // Only FAT16 and FAT32 are supported on RP2040. exFAT is not due to PSRAM limitations
-        #define FSFILE File32
-        #define SDFAT_ SdFat
-        #define FSVOlUME FatVolume
+        #if defined(ARDUINO_PICO_VERSION_STR) && defined(ARDUINO_PICO_MAJOR) && \
+            defined(ARDUINO_PICO_MINOR) && \
+            defined(ARDUINO_PICO_REVISION)
+            #if (ARDUINO_PICO_MAJOR < 4) || (ARDUINO_PICO_MAJOR == 4 && ARDUINO_PICO_MINOR < 4) || \
+                (ARDUINO_PICO_MAJOR == 4 && ARDUINO_PICO_MINOR == 4 && ARDUINO_PICO_REVISION < 2)
+                #define FSFILE File32
+                #define FSVOlUME FatVolume
+                #define FS_SUPPORT_FORMATS "FAT16, FAT32"
+            #else // RP2040 core 4.4.2 and later supports exFAT
+                #define FSFILE FsFile
+                #define FSVOlUME FsVolume
+                #define FS_SUPPORT_FORMATS "FAT16, FAT32, exFAT"
+            #endif
+        #else
+            #pragme message("RP2040 version not defined. Assuming version 4.4.2 or later.")
+            #define FSFILE FsFile
+            #define FSVOlUME FsVolume
+            #define FS_SUPPORT_FORMATS "FAT16, FAT32, exFAT"
+        #endif
     #elif defined(ARDUINO_ARCH_ESP32) // ESP32 supports FAT16, FAT32, and exFAT.
         #define FSFILE FsFile
-        #define SDFAT_ SdFat
         #define FSVOlUME FsVolume
+        #define FS_SUPPORT_FORMATS "FAT16, FAT32, exFAT"
     #endif
 
     #define SDCardModule_Display_Name "SDCardModule"
@@ -66,14 +84,21 @@ struct BootSectorInfo
 
 enum MountStep
 {
+    MOUNT_STEP_CARD_CHANGED, // 0: Card changed
+    MOUNT_STEP_CARD_INSERTED, // 1: Card inserted
+    MOUNT_STEP_CARD_REMOVED, // 2: Card removed
     MOUNT_STEP_INIT,         // 0: Inialize SPI
     MOUNT_STEP_DETECT,       // 1: Get the card object
     MOUNT_STEP_CARD_BEGIN,   // 2: Start the card
     MOUNT_STEP_VOLUME_BEGIN, // 3: Initialize the volume
-    MOUNT_STEP_FINISHED,     // 3: Init done
+    MOUNT_STEP_MOUNT,        // 4: Mount the volume
+    MOUNT_STEP_UNMOUNT,      // 5: Unmount the volume
+    //MOUNT_STEP_FORMAT,       // 6: Format the volume
     MOUNT_STEP_ERROR,        // 4: Error during mount
-    MOUNT_ERROR_STATE        // 5: Error state
-
+    MOUNT_STATE_ERROR,      // 6: Error state
+    MOUNT_STATE_MOUNTED,     // 3: Mounted
+    MOUNT_STATE_UNMOUNTED,    // 7: Unmounted state
+    MOUNT_STATE_CARD_REMOVED
 };
 
 class SDCardModule : public OpenKNX::Module
@@ -92,7 +117,6 @@ class SDCardModule : public OpenKNX::Module
     SDCardModule(uint8_t csPin);
     ~SDCardModule();
 
-    bool isMounted();
     bool format();
     bool info();
     bool Statistics(const char *folder, const char *path, FileInfo &info);
@@ -115,6 +139,10 @@ class SDCardModule : public OpenKNX::Module
     bool Unmount(bool force = false);
     bool Mount();
     void ReMount();
+    inline bool isMounted() { return _mountStep == MOUNT_STATE_MOUNTED; }
+    inline bool isUnmounted() { return _mountStep == MOUNT_STATE_UNMOUNTED; }
+    inline bool isCardInserted() { return digitalRead(PIN_SDCARD_CD) == LOW; } // Card inserted
+    inline bool isCardRemoved() { return !isCardInserted(); } // Card removed
 
     uint64_t getSDCardSize();
     String getCardType();
@@ -122,10 +150,9 @@ class SDCardModule : public OpenKNX::Module
     String getManufacturer(cid_t cid = cid_t());
     String getVolumeLabel();
     String getPartitionType(uint8_t partitionType);
-    bool isCardInserted();
 
   private:
-    bool _mount(); // No direct call, only for internal use
+    void _mount(); // No direct call, only for internal use
     void lowLevelFormat();
     void quickFormat();
     void readPartitionInfo();
@@ -139,12 +166,11 @@ class SDCardModule : public OpenKNX::Module
     uint32_t _cardDetectTimer = 0;          // Timer for card detection
     uint32_t _cardMountTimer = 0;           // Delay for card mount
     uint32_t _mountTimer = 0;               // Delay for card mount
-    bool _cardInserted = false;             // Card inserted flag
+    bool _cardChanged = false;             // Card inserted flag
     bool _mountTimerStarted = false;
 
     SDFAT_ _sd;
     uint8_t _chipSelectPin;
-    bool _mounted;
 };
 
 extern SDCardModule sdCardModule;

@@ -25,7 +25,7 @@ SdSpiConfig sdConfig(PIN_SDCARD_CS, DEDICATED_SPI, SD_SCK_MHZ(50), &SPI_SD);
  *
  * @param csPin
  */
-SDCardModule::SDCardModule(uint8_t csPin) : _chipSelectPin(csPin), _mounted(false), _sd(SDFAT_()) {}
+SDCardModule::SDCardModule(uint8_t csPin) : _chipSelectPin(csPin), _sd(SDFAT_()) {}
 
 /**
  * @brief Destroy the SDCardModule::SDCardModule object
@@ -62,9 +62,8 @@ void SDCardModule::init()
 void SDCardModule::setup(bool configured)
 {
     logDebugP("Setup...");
-    _mounted = false;
-    _cardInserted = false;
-    _mountStep = MOUNT_STEP_INIT;
+    _cardChanged = false;
+    _mountStep = MOUNT_STEP_CARD_CHANGED;
 }
 
 /**
@@ -78,34 +77,12 @@ void SDCardModule::loop(bool configured)
     {
         _cardDetectTimer = millis();
         bool currentCardInserted = isCardInserted();
-        if (currentCardInserted != _cardInserted)
+        if (currentCardInserted != _cardChanged) // Detect card change
         {
-            _cardInserted = currentCardInserted;
-            if (_cardInserted)
-            {
-                logInfoP("SD card inserted. Starting initialization...");
-                _cardMountTimer = millis();
-                _mountStep = MOUNT_STEP_INIT; // Reset the state machine
-            }
-            else
-            {
-                logInfoP("SD card removed.");
-                Unmount(true); // Force unmount the card
-                _cardMountTimer = 0;
-                _mountStep = MOUNT_STEP_INIT; // Reset the state machine
-            }
+            _cardChanged = currentCardInserted;
+            _mountStep = MOUNT_STEP_CARD_CHANGED;
         }
-    }
-    if (_cardInserted && _cardMountTimer > 0 && delayCheck(_cardMountTimer, 3000))
-    {
-        if (!_mounted && delayCheck(_mountTimer, 1000)) // Check every 1s for mounting
-        {
-            if (_mount())
-            {
-                _cardMountTimer = 0; // Mount-Timer zurücksetzen
-            }
-            _mountTimer = millis(); // Reset timer for next check
-        }
+        _mount(); // State machine for card operations
     }
 }
 
@@ -212,7 +189,7 @@ bool SDCardModule::processCommand(const std::string command, bool diagnose)
         }
         else if (command.compare(4, 4, "add ") == 0)
         {
-            if (!isCardInserted() || !_mounted)
+            if (!isCardInserted() || !isMounted())
             {
                 logErrorP("No SD card inserted or mounted!");
                 return false;
@@ -235,7 +212,7 @@ bool SDCardModule::processCommand(const std::string command, bool diagnose)
         }
         else if (command.compare(4, 3, "ll ") == 0)
         {
-            if (!isCardInserted() || !_mounted)
+            if (!isCardInserted() || !isMounted())
             {
                 logErrorP("No SD card inserted or mounted!");
                 return false;
@@ -519,89 +496,162 @@ bool SDCardModule::processCommand(const std::string command, bool diagnose)
  * It ensures that the card is properly initialized, detected, and its volume is prepared for use.
  * The function will return `true` once the card is successfully mounted, or `false` if the process is still ongoing or fails.
  *
- * **Important:** Do not call this function directly. Use the `Mount()` function instead to trigger the mounting process.
+ * **Important:** Do not call this function directly. Use the `Mount()/Unmount()` functions instead to trigger the (un)mounting processes.
  *
  * ### State Machine Process:
- * 1. **MOUNT_STEP_INIT**: Initialize the SPI interface for the SD-Card.
- * 2. **MOUNT_STEP_DETECT**: Detect the presence of the SD-Card.
- * 3. **MOUNT_STEP_CARD_BEGIN**: Start the SD-Card initialization process.
- * 4. **MOUNT_STEP_VOLUME_BEGIN**: Initialize the volume (file system) on the SD-Card.
- * 5. **MOUNT_STEP_FINISHED**: Successfully mount the SD-Card and reset the state machine.
- * 6. **MOUNT_STEP_ERROR**: Handle errors during the mounting process.
+ * 1. **Card Changed**: Detects if the card has been inserted or removed.
+ * 2. **Card Inserted**: Waits for a few seconds to ensure the card is stable before proceeding.
+ * 3. **Initialize**: Initializes the SPI interface for the SD-Card.
+ * 4. **Detect**: Checks if the card is inserted.
+ * 5. **Card Begin**: Initializes the SD-Card.
+ * 6. **Volume Begin**: Initializes the volume on the SD-Card.
+ * 7. **Mount**: Mounts the volume and prepares it for use.
+ * 8. **Unmount**: Unmounts the volume and prepares for removal.
+ * 9. **Error**: Handles any errors that occur during the mounting process.
+ * 10. **Mounted**: Indicates that the card is successfully mounted and ready for use.
+ * 11. **Unmounted**: Indicates that the card is unmounted and not ready for use.
+ * 12. **Card Removed**: Indicates that the card has been removed.
  *
  * @return true if the SD-Card is successfully mounted.
  * @return false if the SD-Card is not yet mounted or an error occurred.
  */
-bool SDCardModule::_mount()
+void SDCardModule::_mount()
 {
-    if (_mountStep == MOUNT_ERROR_STATE && _cardInserted) return false;
+    if (_mountStep == MOUNT_STATE_ERROR && _cardChanged) return;
     switch (_mountStep)
     {
+        case MOUNT_STEP_CARD_CHANGED:
+        {
+            if (isCardInserted() && // Die zwischenschritte dürfen wir hier an der stelle nicht stören
+                    _mountStep == MOUNT_STEP_CARD_INSERTED ||
+                _mountStep == MOUNT_STEP_DETECT ||
+                _mountStep == MOUNT_STEP_CARD_BEGIN ||
+                _mountStep == MOUNT_STEP_VOLUME_BEGIN ||
+                _mountStep == MOUNT_STEP_MOUNT)
+                return;
+            if (isCardRemoved() && // Die zwischenschritte dürfen wir hier an der stelle nicht stören
+                _mountStep == MOUNT_STEP_UNMOUNT)
+                return;
+
+            if (isCardInserted() && _mountStep != MOUNT_STATE_MOUNTED)
+            {
+                logInfoP("SD-Card Inserted. Preperating to initialize...");
+                _cardMountTimer = millis();
+                _mountStep = MOUNT_STEP_CARD_INSERTED;
+                return;
+            }
+            if (isCardRemoved() && _mountStep != MOUNT_STATE_UNMOUNTED)
+            {
+                logInfoP("SD-Card is removed. Unmounting...");
+                _mountStep = MOUNT_STEP_UNMOUNT;
+            }
+        }
+        break;
+
+        case MOUNT_STEP_CARD_INSERTED:
+        {
+            if (isCardInserted() &&
+                (_cardMountTimer > 0 && delayCheck(_cardMountTimer, 3000)))
+            {
+                logInfoP("Mounting SD-Card...");
+                _mountStep = MOUNT_STEP_INIT;
+            }
+        }
+        break;
+
         case MOUNT_STEP_INIT:
-            logInfoP("Initializing SPI for SD-Card...");
+        {
+            logDebugP("Initializing SPI for SD-Card...");
     #ifdef ARDUINO_ARCH_RP2040
             SPI_SD.begin(true);
     #else
             SPI_SD.begin(PIN_SDCARD_SCK, PIN_SDCARD_MISO, PIN_SDCARD_MOSI, PIN_SDCARD_CS);
     #endif
-
             _mountStep = MOUNT_STEP_DETECT;
-            return false;
+        }
+        break;
 
         case MOUNT_STEP_DETECT:
+        {
             if (!isCardInserted())
             {
                 logErrorP("SD-Card is not inserted! Please insert the SD-Card and try again.");
                 _mountStep = MOUNT_STEP_ERROR;
-                return false;
+                return;
             }
             _mountStep = MOUNT_STEP_CARD_BEGIN;
-            return false;
+        }
+        break;
 
         case MOUNT_STEP_CARD_BEGIN:
+        {
             if (!_sd.cardBegin(sdConfig))
             {
                 logErrorP("SD-Card initialization failed!");
                 _mountStep = MOUNT_STEP_ERROR;
-                return false;
+                return;
             }
             logInfoP("SD-Card initialized.");
             _mountStep = MOUNT_STEP_VOLUME_BEGIN;
-            return false;
+        }
+        break;
 
         case MOUNT_STEP_VOLUME_BEGIN:
+        {
             if (!_sd.volumeBegin())
             {
-                logErrorP("Volume initialization failed! Please check format (FAT16, FAT32, exFAT).");
+                logErrorP("Volume initialization failed! Please check file system format!");
+                logErrorP(" -- Supported formats: %s --", FS_SUPPORT_FORMATS);
                 _mountStep = MOUNT_STEP_ERROR;
-                return false;
+                return;
             }
             logInfoP("Volume initialized.");
-            _mountStep = MOUNT_STEP_FINISHED;
-            return false;
+            _mountStep = MOUNT_STEP_MOUNT;
+        }
+        break;
 
-        case MOUNT_STEP_FINISHED:
-            _mounted = true;
-            _mountStep = MOUNT_STEP_INIT; // Reset the mount step
+        case MOUNT_STEP_MOUNT:
+        {
+            _mountStep = MOUNT_STATE_MOUNTED; // Reset the mount step
             logInfoP("SD-Card successfully mounted!");
             // logInfoP("Manufacturer: %s", getManufacturer().c_str());
             // logInfoP("Type: %s", getCardType().c_str());
             // logInfoP("FS Type: %s", getFsType().c_str());
             // logInfoP("Size: %s", formatSize((uint64_t)_sd.card()->sectorCount() * 512));
-            info();
-            return true;
+            info(); // ToDo: info takes sometime to long to show the info!
+        }
+        break;
+
+        case MOUNT_STEP_UNMOUNT:
+        {
+            logInfoP("Unmounting SD-Card...");
+            Unmount(true);
+        }
+        break;
 
         case MOUNT_STEP_ERROR:
+        {
             logErrorP("Failed to mount the SD-Card!");
             logErrorP("Error code: %X (Data: %X)", _sd.card()->errorCode(), _sd.card()->errorData());
             logErrorP("Mounting aborted. SD-Card is in an error state. Remove and reinsert the card to retry.");
-            _mountStep = MOUNT_ERROR_STATE;
-            return true;
+            _mountStep = MOUNT_STATE_ERROR;
+        }
+        break;
 
-        case MOUNT_ERROR_STATE:
-            return false;
+        // ToDo: Add also the formatting processes here
+        //
+        case MOUNT_STATE_ERROR:        // Card is in error state
+        case MOUNT_STATE_CARD_REMOVED: // Card is removed
+        case MOUNT_STATE_UNMOUNTED:    // Card could not be mounted
+        case MOUNT_STATE_MOUNTED:      // Card is mounted
+            break;
+
+        default:
+            logErrorP("Unknown state in SD-Card process!");
+            _mountStep = MOUNT_STEP_ERROR;
+            break;
     }
-    return false;
+    return;
 }
 
 /**
@@ -612,10 +662,10 @@ bool SDCardModule::_mount()
  */
 bool SDCardModule::Unmount(bool force)
 {
-    if (!force && !_mounted)
+    if (!force && !isMounted())
     {
         logDebugP("SD-Card is not mounted!");
-        return false;
+        return true;
     }
 
     if (!force && _sd.card()->isBusy())
@@ -628,9 +678,7 @@ bool SDCardModule::Unmount(bool force)
     logInfoP("SD-Card unmounted!");
     SPI_SD.end();
     logDebugP("SPI for SD-Card closed!");
-    _mounted = false;
-    _mountStep = MOUNT_STEP_INIT; // Reset the mount step
-    _cardInserted = false;
+    _mountStep = MOUNT_STATE_UNMOUNTED; // Reset the mount step
     return true;
 }
 
@@ -641,16 +689,18 @@ bool SDCardModule::Unmount(bool force)
  */
 bool SDCardModule::Mount()
 {
-    if (_mounted)
+    if (isMounted())
     {
         logDebugP("SD-Card is already mounted!");
         return true;
     }
+    if (!isCardInserted())
+    {
+        logErrorP("SD-Card is not inserted! Please insert the SD-Card and try again.");
+        return false;
+    }
 
-    // Reset settings to remount the card
-    _mounted = false;
-    _mountStep = MOUNT_STEP_INIT;
-    _cardInserted = false;
+    _mountStep = MOUNT_STEP_CARD_INSERTED; // Reset the state machine
     logInfoP("Remounting triggered...");
     return true;
 }
@@ -744,23 +794,12 @@ BootSectorInfo SDCardModule::getBootSectorInfo(int fsType)
  * */
 bool SDCardModule::rename(const char *oldPath, const char *newPath)
 {
-    if (!_mounted)
+    if (!isMounted())
     {
         logErrorP("No SD card mounted!");
         return false;
     }
     return _sd.rename(oldPath, newPath);
-}
-
-/**
- * @brief Returns the mount status of the SD card
- *
- * @return true if the SD card is mounted, false otherwise
- *
- */
-bool SDCardModule::isMounted()
-{
-    return _mounted;
 }
 
 /**
@@ -776,16 +815,31 @@ bool SDCardModule::format()
         logErrorP("No SD card inserted!");
         return false;
     }
+    if (!Unmount())
+    {
+        logErrorP("Unmounting the SD card failed! Aborting format.");
+        return false;
+    }
+
     logInfoP("Formatting the SD card...");
+    logInfoP("The formatting process may take a few time.");
+    logInfoP(" --- PLEASE WAIT --- ");
     if (_sd.format())
     {
+        logInfoP(" --- FORMATTING SUCCESSFUL --- ");
+        logInfoP("Formatting completed successfully!");
+        logInfoP("The SD card is now formatted.");
         logInfoP("SD card formatted successfully!");
-        Unmount();
+        logInfoP("Triggering remount...");
+        ReMount();
         return true;
     }
     else
     {
+        logErrorP("!!! ERROR DURING FORMATTING !!!");
         logErrorP("Failed to format the SD card!");
+        logErrorP("Please format the SD card manually!");
+        logErrorP("Supported formats: %s", FS_SUPPORT_FORMATS);
         return false;
     }
 }
@@ -801,14 +855,27 @@ void SDCardModule::quickFormat()
         logErrorP("No SD card inserted!");
         return;
     }
+    if (!Unmount())
+    {
+        logErrorP("Unmounting the SD card failed! Aborting quick format.");
+        return;
+    }
+    logInfoP("Quick formatting the SD card...");
+    logInfoP("The quick formatting process may take a few time.");
+    logInfoP(" --- PLEASE WAIT --- ");
     uint8_t emptyMBR[512] = {0};
     if (!_sd.card()->writeSector(0, emptyMBR))
     {
-        logErrorP("Error writing MBR sector!");
-        logErrorP("Quick formatting failed!");
+        logInfoP(" --- ERROR DURING QUICK FORMATTING --- ");
+        logInfoP("Error writing MBR sector!");
+        logInfoP("The SD card is not formatted!");
+        logInfoP("Please format the SD card manually!");
         return;
     }
-    logInfoP("MBR deleted. Card must be repartitioned.");
+    logInfoP(" --- QUICK FORMATTING SUCCESSFUL --- ");
+    logInfoP("Quick formatting completed successfully!");
+    logInfoP("The MBR was deleted!");
+    logInfoP("You need to format the SD card. Use the 'format' command.");
 }
 
 /**
@@ -822,15 +889,27 @@ void SDCardModule::lowLevelFormat()
         logErrorP("No SD card inserted!");
         return;
     }
-    logInfoP("WARNING: A low-level format will erase all data on the SD card!");
+    if (!Unmount())
+    {
+        logErrorP("Unmounting the SD card failed! Aborting low-level format.");
+        return;
+    }
+    logInfoP("Low-Level formatting the SD card...");
+    logInfoP("!! This will zero-fill the entire SD card !!");
+    logInfoP("!! The low-level formatting process take a few time. !! ");
+    logInfoP(" --- PLEASE WAIT --- ");
     uint8_t emptySector[512] = {0}; // Leerer Sektor mit 0x00
 
     for (uint32_t i = 0; i < _sd.card()->sectorCount(); i++)
     {
         if (!_sd.card()->writeSector(i, emptySector))
         {
-            logErrorP("Error writing sector %lu", i);
+            logErrorP(" --- ERROR DURING LOW-LEVEL FORMATTING --- ");
+            logErrorP("Error writing sector: %lu", i);
             logErrorP("Low-Level formatting failed!");
+            logErrorP("Please format the SD card manually!");
+            logErrorP("Supported formats: %s", FS_SUPPORT_FORMATS);
+            logErrorP("Low-Level formatting aborted!");
             return;
         }
 
@@ -839,7 +918,9 @@ void SDCardModule::lowLevelFormat()
             logInfoP("Low-Level formatting: %lu%%", i * 100 / _sd.card()->sectorCount());
         }
     }
+    logInfoP(" --- LOW-LEVEL FORMATTING SUCCESSFUL --- ");
     logInfoP("Low-Level formatting completed successfully!");
+    logInfoP("You need to format the SD card. Use the 'format' command.");
 }
 
 /**
@@ -1017,7 +1098,7 @@ void SDCardModule::readPartitionInfo()
         openknx.logger.end();
         return;
     }
-    
+
     logErrorP("No valid partition table (GPT or MBR) found on SD card.");
 }
 
@@ -1029,7 +1110,7 @@ void SDCardModule::readPartitionInfo()
  */
 bool SDCardModule::info()
 {
-    if (!_mounted) return false;
+    if (!isMounted()) return false;
 
     openknx.logger.begin();
     openknx.logger.log(""); // Empty line for spacing
@@ -1074,9 +1155,9 @@ bool SDCardModule::info()
     // }
     openknx.logger.logWithValues("| Card Type              | %-50s |", getCardType().c_str());
     openknx.logger.logWithValues("| File System            | %-50s |", getFsType().c_str());
-    #ifdef ARDUINO_ARCH_RP2040
-    // Need a solution to get the SD card size and usage on RP2040 with FAT32 file system!
-    #elif defined(ARDUINO_ARCH_ESP32) // && defined(SNUSNU)
+    // #ifdef ARDUINO_ARCH_RP2040
+    //  Need a solution to get the SD card size and usage on RP2040 with FAT32 file system!
+    // #elif defined(ARDUINO_ARCH_ESP32) // && defined(SNUSNU)
     uint64_t freeBytes = 0, usedBytes = 0, totalBytes = getSDCardSize();
     if (totalBytes > 0)
     {
@@ -1111,7 +1192,7 @@ bool SDCardModule::info()
     {
         openknx.logger.log("| Error                  | Unable to read SD card size                      |");
     }
-    #endif
+    // #endif
 
     openknx.logger.log("-------------------------------------------------------------------------------");
     openknx.logger.end();
@@ -1135,7 +1216,7 @@ bool SDCardModule::info()
  */
 FSFILE SDCardModule::open(const char *path, const char *mode)
 {
-    if (!_mounted) return FSFILE();
+    if (!isMounted()) return FSFILE();
     oflag_t flags = 0;
     if (strcmp(mode, "r") == 0)
     {
@@ -1174,7 +1255,7 @@ FSFILE SDCardModule::open(const char *path, const char *mode)
  */
 bool SDCardModule::createFile(const char *path)
 {
-    if (!_mounted) return false;
+    if (!isMounted()) return false;
     FSFILE file = open(path, "w");
     if (!file)
     {
@@ -1195,7 +1276,7 @@ bool SDCardModule::createFile(const char *path)
  */
 bool SDCardModule::remove(const char *path)
 {
-    if (!_mounted) return false;
+    if (!isMounted()) return false;
     if (!_sd.remove(path))
     {
         logErrorP("Failed to remove file");
@@ -1214,7 +1295,7 @@ bool SDCardModule::remove(const char *path)
  */
 bool SDCardModule::exists(const char *path)
 {
-    if (!_mounted) return false;
+    if (!isMounted()) return false;
     return _sd.exists(path);
 }
 
@@ -1228,7 +1309,7 @@ bool SDCardModule::exists(const char *path)
  */
 size_t SDCardModule::read(const char *path, uint8_t *buffer, size_t size)
 {
-    if (!_mounted) return 0;
+    if (!isMounted()) return 0;
     FSFILE file = open(path, "r");
     if (!file) return 0;
     size_t bytesRead = file.read(buffer, size);
@@ -1246,7 +1327,7 @@ size_t SDCardModule::read(const char *path, uint8_t *buffer, size_t size)
  */
 size_t SDCardModule::write(const char *path, const uint8_t *buffer, size_t size)
 {
-    if (!_mounted) return 0;
+    if (!isMounted()) return 0;
     FSFILE file = open(path, "w");
     if (!file) return 0;
     size_t bytesWritten = file.write(buffer, size);
@@ -1264,7 +1345,7 @@ size_t SDCardModule::write(const char *path, const uint8_t *buffer, size_t size)
  */
 size_t SDCardModule::append(const char *path, const uint8_t *buffer, size_t size)
 {
-    if (!_mounted) return 0;
+    if (!isMounted()) return 0;
     FSFILE file = open(path, "a");
     if (!file) return 0;
     size_t bytesAppended = file.write(buffer, size);
@@ -1281,7 +1362,7 @@ size_t SDCardModule::append(const char *path, const uint8_t *buffer, size_t size
  */
 bool SDCardModule::mkdir(const char *path)
 {
-    if (!_mounted) return false;
+    if (!isMounted()) return false;
     return _sd.mkdir(path);
 }
 
@@ -1294,7 +1375,7 @@ bool SDCardModule::mkdir(const char *path)
  */
 bool SDCardModule::rmdir(const char *path)
 {
-    if (!_mounted) return false;
+    if (!isMounted()) return false;
     return _sd.rmdir(path);
 }
 
@@ -1307,7 +1388,7 @@ bool SDCardModule::rmdir(const char *path)
  */
 std::vector<String> SDCardModule::getFileList(const char *path)
 {
-    if (!_mounted) return std::vector<String>();
+    if (!isMounted()) return std::vector<String>();
     std::vector<String> fileList;
     FSFILE dir = _sd.open(path);
     if (!dir) return fileList;
@@ -1355,7 +1436,7 @@ time_t SDCardModule::fatDateTimeToUnix(uint16_t fatDate, uint16_t fatTime)
  */
 bool SDCardModule::Statistics(const char *folder, const char *path, FileInfo &info)
 {
-    if (!_mounted) return false;
+    if (!isMounted()) return false;
     FSFILE file;
     String fullPath = String(folder) + "/" + String(path);
     if (!file.open(fullPath.c_str(), O_RDONLY))
@@ -1386,7 +1467,7 @@ bool SDCardModule::Statistics(const char *folder, const char *path, FileInfo &in
  */
 uint64_t SDCardModule::getSDCardSize()
 {
-    if (!isCardInserted() || !_mounted || !_sd.card()) return 0;
+    if (!isCardInserted() || !isMounted() || !_sd.card()) return 0;
     uint32_t sectorCount = _sd.card()->sectorCount(); // Count of sectors
     return (uint64_t)sectorCount * 512;               // Sector size is (alywas?) 512 bytes
 }
@@ -1460,7 +1541,7 @@ String SDCardModule::getCardType()
  */
 String SDCardModule::getFsType()
 {
-    if (!_mounted) return "error";
+    if (!isMounted()) return "error";
     return _sd.fatType() == FAT_TYPE_EXFAT   ? "exFAT"
            : _sd.fatType() == FAT_TYPE_FAT32 ? "FAT32"
            : _sd.fatType() == FAT_TYPE_FAT16 ? "FAT16"
@@ -1480,17 +1561,6 @@ String SDCardModule::getManufacturer(cid_t cid)
     if (_cid.mid == 0 && !_sd.card()->readCID(&_cid)) return "Unknown";
     auto it = manufacturers.find(_cid.mid);
     return (it != manufacturers.end()) ? String(it->second.c_str()) : "Unknown";
-}
-
-/**
- * @brief Check if the SD card is inserted.
- *
- * @return True if the SD card is inserted, false otherwise.
- */
-bool SDCardModule::isCardInserted()
-{
-    // ToDo Hardware Config for CD Pin
-    return digitalRead(PIN_SDCARD_CD) == LOW;
 }
 
 SDCardModule sdCardModule(PIN_SDCARD_CS); // ToDo: CS Pin for SD card module ?, not obtain them from device configuration

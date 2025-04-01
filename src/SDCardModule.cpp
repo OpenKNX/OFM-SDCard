@@ -62,8 +62,18 @@ void SDCardModule::init()
 void SDCardModule::setup(bool configured)
 {
     logDebugP("Setup...");
-    _cardChanged = false;
-    _mountStep = MOUNT_STEP_CARD_CHANGED;
+    _cardChanged = isCardInserted();
+    if (_cardChanged) // Only initial on bootup!
+    {
+        logInfoP("A inserted SD-Card is detected. Initializing...");
+        _cardMountTimer = millis();
+        _mountStep = MOUNT_STEP_CARD_INSERTED;
+    }
+    else // Only on bootup
+    {
+        _mountStep = MOUNT_STATE_CARD_REMOVED;
+        logDebugP("No SD-Card is inserted.");
+    }
 }
 
 /**
@@ -143,6 +153,11 @@ bool SDCardModule::processCommand(const std::string command, bool diagnose)
         }
         else if (command.compare(4, 6, "format") == 0)
         {
+            if (!isCardInserted())
+            {
+                logErrorP("No SD card inserted!");
+                return false;
+            }
             std::string answer = command.substr(10).c_str();
             if (answer.compare(" yes") == 0)
             {
@@ -157,6 +172,11 @@ bool SDCardModule::processCommand(const std::string command, bool diagnose)
         }
         else if (command.compare(4, 3, "llf") == 0)
         {
+            if (!isCardInserted())
+            {
+                logErrorP("No SD card inserted!");
+                return false;
+            }
             std::string answer = command.substr(7);
             if (answer.compare(" yes") == 0)
             {
@@ -171,6 +191,11 @@ bool SDCardModule::processCommand(const std::string command, bool diagnose)
         }
         else if (command.compare(4, 3, "rpi") == 0) // Read partition information
         {
+            if (!isCardInserted())
+            {
+                logErrorP("No SD card inserted!");
+                return false;
+            }
             readPartitionInfo();
         }
         else if (command.compare(4, 7, "qformat") == 0)
@@ -338,6 +363,11 @@ bool SDCardModule::processCommand(const std::string command, bool diagnose)
         }
         else if (command.compare(4, 3, "ls ") == 0)
         {
+            if (!isCardInserted() || !isMounted())
+            {
+                logErrorP("No SD card inserted or mounted!");
+                return false;
+            }
             String path = command.substr(7).c_str();
             std::vector<String> files = getFileList(path.length() > 0 ? path.c_str() : "/");
             for (String file : files)
@@ -347,6 +377,11 @@ bool SDCardModule::processCommand(const std::string command, bool diagnose)
         }
         else if (command.compare(4, 6, "mkdir ") == 0)
         {
+            if (!isCardInserted() || !isMounted())
+            {
+                logErrorP("No SD card inserted or mounted!");
+                return false;
+            }
             String dirName = command.substr(11).c_str();
             if (dirName[0] != '/')
             {
@@ -364,6 +399,11 @@ bool SDCardModule::processCommand(const std::string command, bool diagnose)
         }
         else if (command.compare(4, 6, "rmdir ") == 0)
         {
+            if (!isCardInserted() || !isMounted())
+            {
+                logErrorP("No SD card inserted or mounted!");
+                return false;
+            }
             String dirName = command.substr(11).c_str();
             if (dirName[0] != '/')
             {
@@ -381,6 +421,11 @@ bool SDCardModule::processCommand(const std::string command, bool diagnose)
         }
         else if (command.compare(4, 3, "rm ") == 0)
         {
+            if (!isCardInserted() || !isMounted())
+            {
+                logErrorP("No SD card inserted or mounted!");
+                return false;
+            }
             String fileName = command.substr(7).c_str();
             if (fileName[0] != '/')
             {
@@ -398,6 +443,11 @@ bool SDCardModule::processCommand(const std::string command, bool diagnose)
         }
         else if (command.compare(4, 4, "cat ") == 0)
         {
+            if (!isCardInserted() || !isMounted())
+            {
+                logErrorP("No SD card inserted or mounted!");
+                return false;
+            }
             logInfoP("Reading file and will show the first %d bytes of the file content.", OPENKNX_MAX_LOG_MESSAGE_LENGTH);
             String fileName = command.substr(9).c_str();
             uint8_t buffer[OPENKNX_MAX_LOG_MESSAGE_LENGTH];
@@ -420,6 +470,11 @@ bool SDCardModule::processCommand(const std::string command, bool diagnose)
         }
         else if (command.compare(4, 5, "echo ") == 0)
         {
+            if (!isCardInserted() || !isMounted())
+            {
+                logErrorP("No SD card inserted or mounted!");
+                return false;
+            }
             String fileName = command.substr(9, command.find(' ', 9) - 9).c_str();
             String content = command.substr(command.find(' ', 9) + 1).c_str();
             if (fileName.length() > 0 && content.length() > 0)
@@ -456,6 +511,11 @@ bool SDCardModule::processCommand(const std::string command, bool diagnose)
         }
         else if (command.compare(4, 3, "mv ") == 0)
         {
+            if (!isCardInserted() || !isMounted())
+            {
+                logErrorP("No SD card inserted or mounted!");
+                return false;
+            }
             String oldName = command.substr(7, command.find(' ', 7) - 7).c_str();
             if (oldName[0] != '/')
             {
@@ -488,6 +548,21 @@ bool SDCardModule::processCommand(const std::string command, bool diagnose)
     }
     return bRet;
 } // end of processCommand
+
+bool SDCardModule::_inMountingProcess()
+{
+    return ( // Die zwischenschritte dürfen wir hier an der stelle nicht stören
+        _mountStep == MOUNT_STEP_CARD_INSERTED ||
+        _mountStep == MOUNT_STEP_INIT ||
+        _mountStep == MOUNT_STEP_DETECT ||
+        _mountStep == MOUNT_STEP_CARD_BEGIN ||
+        _mountStep == MOUNT_STEP_VOLUME_BEGIN ||
+        _mountStep == MOUNT_STEP_MOUNT);
+}
+bool SDCardModule::_inUnmountingProcess()
+{
+    return (_mountStep == MOUNT_STEP_UNMOUNT);
+}
 
 /**
  * @brief State machine to mount the SD-Card.
@@ -522,27 +597,24 @@ void SDCardModule::_mount()
     {
         case MOUNT_STEP_CARD_CHANGED:
         {
-            if (isCardInserted() && // Die zwischenschritte dürfen wir hier an der stelle nicht stören
-                    _mountStep == MOUNT_STEP_CARD_INSERTED ||
-                _mountStep == MOUNT_STEP_DETECT ||
-                _mountStep == MOUNT_STEP_CARD_BEGIN ||
-                _mountStep == MOUNT_STEP_VOLUME_BEGIN ||
-                _mountStep == MOUNT_STEP_MOUNT)
-                return;
-            if (isCardRemoved() && // Die zwischenschritte dürfen wir hier an der stelle nicht stören
-                _mountStep == MOUNT_STEP_UNMOUNT)
-                return;
+            if (isCardInserted() && _inMountingProcess()) return; // Card Inserted! Do nothing! We are in mount process
+
+            if (isCardRemoved() && _inUnmountingProcess()) return; // Card Removed! Do nothing! We are in unmount process
 
             if (isCardInserted() && _mountStep != MOUNT_STATE_MOUNTED)
             {
-                logInfoP("SD-Card Inserted. Preperating to initialize...");
+                logInfoP("SD-Card Inserted.");
                 _cardMountTimer = millis();
                 _mountStep = MOUNT_STEP_CARD_INSERTED;
                 return;
             }
-            if (isCardRemoved() && _mountStep != MOUNT_STATE_UNMOUNTED)
+
+            if (isCardRemoved() && (_mountStep != MOUNT_STATE_UNMOUNTED))
             {
-                logInfoP("SD-Card is removed. Unmounting...");
+                if (_inMountingProcess())
+                    logInfoP("SD-Card is removed. Stopping the mounting process...");
+                else
+                    logInfoP("SD-Card is removed. Unmounting the card...");
                 _mountStep = MOUNT_STEP_UNMOUNT;
             }
         }
@@ -554,6 +626,7 @@ void SDCardModule::_mount()
                 (_cardMountTimer > 0 && delayCheck(_cardMountTimer, 3000)))
             {
                 logInfoP("Mounting SD-Card...");
+                _cardMountTimer = 0; //?
                 _mountStep = MOUNT_STEP_INIT;
             }
         }
@@ -1110,8 +1183,11 @@ void SDCardModule::readPartitionInfo()
  */
 bool SDCardModule::info()
 {
-    if (!isMounted()) return false;
-
+    if (!isMounted())
+    {
+        logErrorP("No SD card mounted!");
+        return false;
+    }
     openknx.logger.begin();
     openknx.logger.log(""); // Empty line for spacing
     openknx.logger.color(CONSOLE_HEADLINE_COLOR);
@@ -1172,10 +1248,12 @@ bool SDCardModule::info()
             float usedPercentage = (totalBytes > 0) ? ((float)usedBytes * 100.0f / totalBytes) : 0.0f;
             float freePercentage = 100.0f - usedPercentage;
             int usedBarLength = (int)(usedPercentage * 0.5f);
-            int freeBarLength = 50 - usedBarLength;
 
-            char usedBar[51] = {0};
-            char freeBar[51] = {0};
+    #define BAR_LENGTH 48
+            int freeBarLength = BAR_LENGTH - usedBarLength;
+
+            char usedBar[BAR_LENGTH + 1] = {0};
+            char freeBar[BAR_LENGTH + 1] = {0};
 
             memset(usedBar, '=', usedBarLength);
             memset(freeBar, '=', freeBarLength);
@@ -1183,8 +1261,8 @@ bool SDCardModule::info()
             openknx.logger.logWithValues("| Card capacity          | %-50s |", formatSize(totalBytes));
             openknx.logger.log("-------------------------------------------------------------------------------");
             openknx.logger.color(CONSOLE_HEADLINE_COLOR);
-            openknx.logger.logWithValues("| Used: %-10s [%-50s] %.2f%% |", formatSize(usedBytes), usedBar, usedPercentage);
-            openknx.logger.logWithValues("| Free: %-10s [%-50s] %.2f%% |", formatSize(freeBytes), freeBar, freePercentage);
+            openknx.logger.logWithValues("| Used: %-10s [%-*s] %6.2f%% |", formatSize(usedBytes), BAR_LENGTH, usedBar, usedPercentage);
+            openknx.logger.logWithValues("| Free: %-10s [%-*s] %6.2f%% |", formatSize(freeBytes), BAR_LENGTH, freeBar, freePercentage);
             openknx.logger.color(0);
         }
     }

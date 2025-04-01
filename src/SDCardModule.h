@@ -32,7 +32,7 @@
 
     #ifdef ARDUINO_ARCH_RP2040 // Only FAT16 and FAT32 are supported on RP2040. exFAT is not due to PSRAM limitations
         #if defined(ARDUINO_PICO_VERSION_STR) && defined(ARDUINO_PICO_MAJOR) && \
-            defined(ARDUINO_PICO_MINOR) && \
+            defined(ARDUINO_PICO_MINOR) &&                                      \
             defined(ARDUINO_PICO_REVISION)
             #if (ARDUINO_PICO_MAJOR < 4) || (ARDUINO_PICO_MAJOR == 4 && ARDUINO_PICO_MINOR < 4) || \
                 (ARDUINO_PICO_MAJOR == 4 && ARDUINO_PICO_MINOR == 4 && ARDUINO_PICO_REVISION < 2)
@@ -84,21 +84,21 @@ struct BootSectorInfo
 
 enum MountStep
 {
-    MOUNT_STEP_CARD_CHANGED, // 0: Card changed
+    MOUNT_STEP_CARD_CHANGED,  // 0: Card changed
     MOUNT_STEP_CARD_INSERTED, // 1: Card inserted
-    MOUNT_STEP_CARD_REMOVED, // 2: Card removed
-    MOUNT_STEP_INIT,         // 0: Inialize SPI
-    MOUNT_STEP_DETECT,       // 1: Get the card object
-    MOUNT_STEP_CARD_BEGIN,   // 2: Start the card
-    MOUNT_STEP_VOLUME_BEGIN, // 3: Initialize the volume
-    MOUNT_STEP_MOUNT,        // 4: Mount the volume
-    MOUNT_STEP_UNMOUNT,      // 5: Unmount the volume
-    //MOUNT_STEP_FORMAT,       // 6: Format the volume
-    MOUNT_STEP_ERROR,        // 4: Error during mount
-    MOUNT_STATE_ERROR,      // 6: Error state
-    MOUNT_STATE_MOUNTED,     // 3: Mounted
-    MOUNT_STATE_UNMOUNTED,    // 7: Unmounted state
-    MOUNT_STATE_CARD_REMOVED
+    MOUNT_STEP_CARD_REMOVED,  // 2: Card removed
+    MOUNT_STEP_INIT,          // 3: Initialize SPI
+    MOUNT_STEP_DETECT,        // 4: Detect the card
+    MOUNT_STEP_CARD_BEGIN,    // 5: Initialize the card
+    MOUNT_STEP_VOLUME_BEGIN,  // 6: Initialize the volume
+    MOUNT_STEP_MOUNT,         // 7: Mount the volume
+    MOUNT_STEP_UNMOUNT,       // 8: Unmount the volume
+    // MOUNT_STEP_FORMAT,     // 9: Format the volume
+    MOUNT_STEP_ERROR,        // 10: Error state
+    MOUNT_STATE_ERROR,       // 11: Error state
+    MOUNT_STATE_MOUNTED,     // 12: Mounted state
+    MOUNT_STATE_UNMOUNTED,   // 13: Unmounted state
+    MOUNT_STATE_CARD_REMOVED // 14: Card removed state
 };
 
 class SDCardModule : public OpenKNX::Module
@@ -142,7 +142,7 @@ class SDCardModule : public OpenKNX::Module
     inline bool isMounted() { return _mountStep == MOUNT_STATE_MOUNTED; }
     inline bool isUnmounted() { return _mountStep == MOUNT_STATE_UNMOUNTED; }
     inline bool isCardInserted() { return digitalRead(PIN_SDCARD_CD) == LOW; } // Card inserted
-    inline bool isCardRemoved() { return !isCardInserted(); } // Card removed
+    inline bool isCardRemoved() { return !isCardInserted(); }                  // Card removed
 
     uint64_t getSDCardSize();
     String getCardType();
@@ -153,6 +153,8 @@ class SDCardModule : public OpenKNX::Module
 
   private:
     void _mount(); // No direct call, only for internal use
+    bool _inMountingProcess();
+    bool _inUnmountingProcess();
     void lowLevelFormat();
     void quickFormat();
     void readPartitionInfo();
@@ -166,7 +168,7 @@ class SDCardModule : public OpenKNX::Module
     uint32_t _cardDetectTimer = 0;          // Timer for card detection
     uint32_t _cardMountTimer = 0;           // Delay for card mount
     uint32_t _mountTimer = 0;               // Delay for card mount
-    bool _cardChanged = false;             // Card inserted flag
+    bool _cardChanged = false;              // Card inserted flag
     bool _mountTimerStarted = false;
 
     SDFAT_ _sd;

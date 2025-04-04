@@ -21,11 +21,16 @@
         #include <SDFS.h>
     #elif (ARDUINO_ARCH_ESP32)
         #define DISABLE_FS_H_WARNING
+        #define MAINTAIN_FREE_CLUSTER_COUNT 1
         // Full documentation for the SdFat library configuration can be found at:
         // https://github.com/greiman/SdFat/blob/master/src/SdFatConfig.h
         #include <SdFat.h>
     #elif
         #error "Unsupported architecture"
+    #endif
+
+    #ifdef DEVICE_DISPLAY_MODULE
+        #include "Widgets/WidgetSDCard.h"
     #endif
 
     #define SDFAT_ SdFat
@@ -68,6 +73,18 @@ struct FileInfo
     bool isDir;
 };
 
+
+struct CardInfo
+{
+  String manufacturer;
+  String productName;
+  String revision;
+  String serialNumber;
+  String manufactureDate;
+  String oemApplicationID;
+  bool isValid = false;
+};
+
 struct BootSectorInfo
 {
     uint16_t bytesPerSector;
@@ -104,9 +121,6 @@ enum MountStep
 class SDCardModule : public OpenKNX::Module
 {
   public:
-    // SPIClass SPI1(HSPI);
-    // SoftSpiDriver<PIN_SDCARD_MISO, PIN_SDCARD_MOSI, PIN_SDCARD_SCK> softSpi;
-    // #define SD_CONFIG SdSpiConfig(PIN_SDCARD_CS, SDCARD_SPI_INTERFACE, SD_SCK_MHZ(0), &SPI1)
     void init();
     void setup(bool configured) override;
     void loop(bool configured) override;
@@ -140,16 +154,23 @@ class SDCardModule : public OpenKNX::Module
     bool Mount();
     void ReMount();
     inline bool isMounted() { return _mountStep == MOUNT_STATE_MOUNTED; }
+    inline bool isMounting() { return _inMountingProcess(); }
+    inline bool isUnmounting() { return _inUnmountingProcess(); }
+    inline bool isError() { return _mountStep == MOUNT_STATE_ERROR; }
     inline bool isUnmounted() { return _mountStep == MOUNT_STATE_UNMOUNTED; }
     inline bool isCardInserted() { return digitalRead(PIN_SDCARD_CD) == LOW; } // Card inserted
     inline bool isCardRemoved() { return !isCardInserted(); }                  // Card removed
 
     uint64_t getSDCardSize();
-    String getCardType();
+    bool getSDCardUsage(uint64_t &freeSpace, uint64_t &usedSpace);
+    bool readCardInfo(CardInfo &cardInfo);
+    inline void resetCardInfo() { _cardInfo.isValid = false; }
+    inline CardInfo getCardInfo() { return _cardInfo; }
+    String getCardType(bool shortType = false);
     String getFsType();
-    String getManufacturer(cid_t cid = cid_t());
     String getVolumeLabel();
     String getPartitionType(uint8_t partitionType);
+    const char *formatSize(uint64_t bytes);
 
   private:
     void _mount(); // No direct call, only for internal use
@@ -158,8 +179,6 @@ class SDCardModule : public OpenKNX::Module
     void lowLevelFormat();
     void quickFormat();
     void readPartitionInfo();
-    const char *formatSize(uint64_t bytes);
-    void getSDCardUsage(uint64_t &freeSpace, uint64_t &usedSpace);
 
     time_t fatDateTimeToUnix(uint16_t fatDate, uint16_t fatTime);
     BootSectorInfo getBootSectorInfo(int fsType);
@@ -171,6 +190,7 @@ class SDCardModule : public OpenKNX::Module
     bool _cardChanged = false;              // Card inserted flag
     bool _mountTimerStarted = false;
 
+    CardInfo _cardInfo = {"", "", "", "", "", "", false};
     SDFAT_ _sd;
     uint8_t _chipSelectPin;
 };

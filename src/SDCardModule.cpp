@@ -74,6 +74,11 @@ void SDCardModule::setup(bool configured)
         _mountStep = MOUNT_STATE_CARD_REMOVED;
         logDebugP("No SD-Card is inserted.");
     }
+
+    #ifdef DEVICE_DISPLAY_MODULE
+    WidgetSDCard *sdCardWidget = new WidgetSDCard(30000, WidgetFlags::DefaultWidget); // Create a new SD Card widget
+    openknxDisplayModule.widgetManager.addWidget(sdCardWidget);                       // Add the widget to the widget manager queue.
+    #endif
 }
 
 /**
@@ -687,11 +692,8 @@ void SDCardModule::_mount()
         {
             _mountStep = MOUNT_STATE_MOUNTED; // Reset the mount step
             logInfoP("SD-Card successfully mounted!");
-            // logInfoP("Manufacturer: %s", getManufacturer().c_str());
-            // logInfoP("Type: %s", getCardType().c_str());
-            // logInfoP("FS Type: %s", getFsType().c_str());
-            // logInfoP("Size: %s", formatSize((uint64_t)_sd.card()->sectorCount() * 512));
-            info(); // ToDo: info takes sometime to long to show the info!
+            resetCardInfo(); // Reset the card info to be sure we read the info again
+            info();
         }
         break;
 
@@ -1188,26 +1190,29 @@ bool SDCardModule::info()
         logErrorP("No SD card mounted!");
         return false;
     }
-    openknx.logger.begin();
-    openknx.logger.log(""); // Empty line for spacing
-    openknx.logger.color(CONSOLE_HEADLINE_COLOR);
-    openknx.logger.log("============================= SD Card Information =============================");
-    openknx.logger.color(0);
-    cid_t cid;
-    if (_sd.card()->readCID(&cid))
+    if (!_cardInfo.isValid)
     {
-        openknx.logger.logWithValues("| Manufacturer ID        | %-50s |", getManufacturer(cid).c_str());
+        logDebugP("No valid card info available. Reading card info...");
+        readCardInfo(_cardInfo); // Seems that we need to read it for the first time! Once is enough!
+    }
 
-        std::string productName = "";
-        for (int i = 0; i < 5; i++)
+    if (_cardInfo.isValid)
+    {
+        openknx.logger.begin();
+        openknx.logger.log(""); // Empty line for spacing
+        openknx.logger.color(CONSOLE_HEADLINE_COLOR);
+        openknx.logger.log("============================= SD Card Information =============================");
+        openknx.logger.color(0);
+        openknx.logger.logWithValues("| Manufacturer Name      | %-50s |", _cardInfo.manufacturer.c_str());
+        openknx.logger.logWithValues("| Product Name           | %-50s |", _cardInfo.productName.c_str());
+        openknx.logger.logWithValues("| Product Revision       | %-50s |", _cardInfo.revision.c_str());
+        if (_cardInfo.oemApplicationID.length() > 0)
         {
-            char tempStr[2] = {(char)cid.pnm[i], '\0'};
-            productName += tempStr;
+            openknx.logger.logWithValues("| OEM Application ID     | %-50s |", _cardInfo.oemApplicationID.c_str());
         }
-        openknx.logger.logWithValues("| Product Name           | %-50s |", productName.c_str());
-        openknx.logger.logWithValues("| Product Revision       | %-50s |", String((unsigned int)cid.prv, HEX).c_str());
-        openknx.logger.logWithValues("| Serial Number          | %-50s |", String((unsigned long)cid.psn(), HEX).c_str());
-        openknx.logger.logWithValues("| Manufacture Date       | %-2s/%4s                                            |", String(cid.mdtMonth()).c_str(), String(cid.mdtYear()).c_str());
+        openknx.logger.logWithValues("| OEM ID                 | %-50s |", _cardInfo.oemApplicationID.c_str());
+        openknx.logger.logWithValues("| Serial Number          | %-50s |", _cardInfo.serialNumber.c_str());
+        openknx.logger.logWithValues("| Manufacture Date       | %-50s |", _cardInfo.manufactureDate.c_str());
     }
     else
     {
@@ -1229,16 +1234,13 @@ bool SDCardModule::info()
     //     openknx.logger.logWithValues("| Volume Label            | %-50s |", info.volumeLabel.c_str());
     //     openknx.logger.log("-------------------------------------------------------------------------------");
     // }
+
     openknx.logger.logWithValues("| Card Type              | %-50s |", getCardType().c_str());
     openknx.logger.logWithValues("| File System            | %-50s |", getFsType().c_str());
-    // #ifdef ARDUINO_ARCH_RP2040
-    //  Need a solution to get the SD card size and usage on RP2040 with FAT32 file system!
-    // #elif defined(ARDUINO_ARCH_ESP32) // && defined(SNUSNU)
-    uint64_t freeBytes = 0, usedBytes = 0, totalBytes = getSDCardSize();
-    if (totalBytes > 0)
-    {
-        getSDCardUsage(freeBytes, usedBytes);
 
+    uint64_t freeBytes = 0, usedBytes = 0, totalBytes = getSDCardSize();
+    if (totalBytes > 0 && getSDCardUsage(freeBytes, usedBytes))
+    {
         if (freeBytes == 0 && usedBytes == 0)
         {
             openknx.logger.log("| Error                  | Unable to retrieve SD card usage                 |");
@@ -1249,11 +1251,11 @@ bool SDCardModule::info()
             float freePercentage = 100.0f - usedPercentage;
             int usedBarLength = (int)(usedPercentage * 0.5f);
 
-    #define BAR_LENGTH 48
-            int freeBarLength = BAR_LENGTH - usedBarLength;
+            // #define BAR_LENGTH 48
+            int freeBarLength = 48 - usedBarLength;
 
-            char usedBar[BAR_LENGTH + 1] = {0};
-            char freeBar[BAR_LENGTH + 1] = {0};
+            char usedBar[48 + 1] = {0};
+            char freeBar[48 + 1] = {0};
 
             memset(usedBar, '=', usedBarLength);
             memset(freeBar, '=', freeBarLength);
@@ -1261,8 +1263,8 @@ bool SDCardModule::info()
             openknx.logger.logWithValues("| Card capacity          | %-50s |", formatSize(totalBytes));
             openknx.logger.log("-------------------------------------------------------------------------------");
             openknx.logger.color(CONSOLE_HEADLINE_COLOR);
-            openknx.logger.logWithValues("| Used: %-10s [%-*s] %6.2f%% |", formatSize(usedBytes), BAR_LENGTH, usedBar, usedPercentage);
-            openknx.logger.logWithValues("| Free: %-10s [%-*s] %6.2f%% |", formatSize(freeBytes), BAR_LENGTH, freeBar, freePercentage);
+            openknx.logger.logWithValues("| Used: %-10s [%-*s] %6.2f%% |", formatSize(usedBytes), 48, usedBar, usedPercentage);
+            openknx.logger.logWithValues("| Free: %-10s [%-*s] %6.2f%% |", formatSize(freeBytes), 48, freeBar, freePercentage);
             openknx.logger.color(0);
         }
     }
@@ -1558,25 +1560,42 @@ uint64_t SDCardModule::getSDCardSize()
  * @param freeSpace The variable to store the free space on the SD card.
  * @param usedSpace The variable to store the used space on the SD card.
  */
-void SDCardModule::getSDCardUsage(uint64_t &freeSpace, uint64_t &usedSpace)
+bool SDCardModule::getSDCardUsage(uint64_t &freeSpace, uint64_t &usedSpace)
 {
     FSVOlUME *vol = _sd.vol();
     if (!vol)
     {
         freeSpace = usedSpace = 0;
-        return; // No volume ?
+        return false; // No volume ?
     }
-    uint32_t freeClusters = vol->freeClusterCount(); // free clusters
-    uint32_t totalClusters = vol->clusterCount();    // total clusters
-    uint32_t clusterSize = vol->bytesPerCluster();   // bytes per cluster (always 512 bytes)
+    uint32_t freeClusters = 0;  // vol->freeClusterCount(); // free clusters
+    uint32_t totalClusters = 0; // vol->clusterCount();    // total clusters
+    uint32_t clusterSize = 0;   // vol->bytesPerCluster();   // bytes per cluster (always 512 bytes)
+
+    uint32_t startTime, endTime;
+    startTime = micros();
+    freeClusters = vol->freeClusterCount();
+    endTime = micros();
+    logDebugP("freeClusterCount() dauert: %lu µs", endTime - startTime);
+
+    startTime = micros();
+    totalClusters = vol->clusterCount();
+    endTime = micros();
+    logDebugP("clusterCount() dauert: %lu µs", endTime - startTime);
+
+    startTime = micros();
+    clusterSize = vol->bytesPerCluster();
+    endTime = micros();
+    logDebugP("bytesPerCluster() dauert: %lu µs", endTime - startTime);
 
     if (freeClusters == 0xFFFFFFFF || totalClusters == 0)
     {
         freeSpace = usedSpace = 0;
-        return; // Values are invalid ?
+        return false; // Values are invalid ?
     }
     freeSpace = (uint64_t)freeClusters * clusterSize;                // Freier Speicher in Bytes
     usedSpace = ((uint64_t)totalClusters * clusterSize) - freeSpace; // Belegter Speicher
+    return true;
 }
 
 /**
@@ -1606,9 +1625,10 @@ const char *SDCardModule::formatSize(uint64_t bytes)
  *
  * @return The type of the SD card.
  */
-String SDCardModule::getCardType()
+String SDCardModule::getCardType(bool shortType)
 {
-    const char *cardTypeStr[] = {"Unknown", "SD (Standard)", "SDHC (High Capacity)", "SDXC (Extended Capacity)"};
+    const char *cardTypeStr[] = {shortType ? "?" : "Unknown", shortType ? "SD" : "SD (Standard)",
+                                 shortType ? "SDHC" : "SDHC (High Capacity)", shortType ? "SDXC" : "SDXC (Extended Capacity)"};
     return cardTypeStr[_sd.card()->type()] ? cardTypeStr[_sd.card()->type()] : "Unknown Type";
 }
 
@@ -1627,18 +1647,48 @@ String SDCardModule::getFsType()
 }
 
 /**
- * @brief Get the manufacturer of the SD card.
  *
- * @return The manufacturer of the SD card.
+ * @brief Get the SD card informations such as manufacturer, product name, revision, serial number, etc.
+ * @param info The structure to store the SD card information.
+ *
+ * @return True if the information is successfully retrieved, false otherwise.
  */
-String SDCardModule::getManufacturer(cid_t cid)
+bool SDCardModule::readCardInfo(CardInfo &info)
 {
-    static const std::unordered_map<uint8_t, std::string> manufacturers = {
+    if (!isMounted())
+    {
+        logErrorP("No SD card mounted!");
+        return false;
+    }
+
+    cid_t cid;
+    if (!_sd.card()->readCID(&cid))
+    {
+        logErrorP("Failed to read CID from SD card.");
+        return false;
+    }
+
+    static const std::unordered_map<uint8_t, const char *> manufacturers = {
         {0x01, "Panasonic"}, {0x41, "ADATA"}, {0x75, "Cactus"}, {0x95, "Extrememory"}, {0x02, "Toshiba"}, {0x45, "Patriot"}, {0x80, "OCZ"}, {0x96, "Dane-Elec"}, {0x03, "SanDisk"}, {0x50, "PNY"}, {0x85, "Kingmax"}, {0x97, "Jenoptik"}, {0x1B, "Samsung"}, {0x55, "Verbatim"}, {0x90, "Apacer"}, {0x98, "Platinum"}, {0x1D, "Kingston"}, {0x5A, "Integral"}, {0x91, "Hama"}, {0x99, "Navigon"}, {0x1E, "Transcend"}, {0x60, "Emtec"}, {0x92, "TakeMS"}, {0xA1, "CDA GmbH"}, {0x28, "Lexar"}, {0x65, "GoodRAM"}, {0x93, "Infineon"}, {0xA2, "ATP Electronics"}, {0x31, "Sony"}, {0x70, "Silicon Power"}, {0x94, "Mustang"}, {0xA3, "Delkin Devices"}};
-    cid_t _cid = cid;
-    if (_cid.mid == 0 && !_sd.card()->readCID(&_cid)) return "Unknown";
-    auto it = manufacturers.find(_cid.mid);
-    return (it != manufacturers.end()) ? String(it->second.c_str()) : "Unknown";
+
+    info.manufacturer = manufacturers.count(cid.mid) ? manufacturers.at(cid.mid) : "Unknown";
+    logDebugP("Manufacturer: %02X", cid.mid);
+    
+
+
+    info.productName = String(cid.pnm, 5);
+
+    info.oemApplicationID = String(1, cid.oid[0]) + String(1, cid.oid[1]);
+
+    info.revision = String(cid.prv);
+
+    info.serialNumber = String(cid.psn());
+
+    char manufactureDateBuffer[50];
+    snprintf(manufactureDateBuffer, sizeof(manufactureDateBuffer), "%02u/%04u", cid.mdtMonth(), cid.mdtYear());
+    info.manufactureDate = manufactureDateBuffer;
+
+    return info.isValid = true;
 }
 
 SDCardModule sdCardModule(PIN_SDCARD_CS); // ToDo: CS Pin for SD card module ?, not obtain them from device configuration

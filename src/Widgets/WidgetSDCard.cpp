@@ -24,6 +24,7 @@ void WidgetSDCard::start()
 
     logDebugP("Starting...");
     _state = WidgetState::RUNNING;
+    _duration_timerStart = millis();
 }
 
 void WidgetSDCard::stop()
@@ -103,18 +104,18 @@ void WidgetSDCard::drawSDInfo()
     _display->display->setCursor((SCREEN_WIDTH - (getName().length() * 6)) / 2, 0);
     _display->display->print(getName().c_str());
 
-    static uint32_t timerStart = millis();
-    uint32_t elapsedMillis = millis() - timerStart;
-    uint32_t remainingSeconds = (_displayTime > elapsedMillis) ? (_displayTime - elapsedMillis) / 1000 : 0;
-    if (remainingSeconds == 0)
+    uint32_t elapsedMillis = millis() - _duration_timerStart;
+    uint32_t remainingMillis = (_displayTime > elapsedMillis) ? (_displayTime - elapsedMillis) : 0;
+    if (remainingMillis == 0)
     {
-        timerStart = millis();
-        remainingSeconds = _displayTime / 1000; // Reset to initial time in seconds
+        _duration_timerStart = millis();
+        remainingMillis = _displayTime; // Reset to initial time
     }
+    uint16_t circlePosition = (SCREEN_WIDTH * elapsedMillis) / _displayTime;
+    _display->display->fillCircle(circlePosition, 10, 2, WHITE);
+    _display->display->drawCircle(circlePosition, 10, 2, BLACK);
+
     _display->display->drawLine(0, 10, SCREEN_WIDTH, 10, WHITE);
-    String timerText = String(remainingSeconds) + "s";
-    _display->display->setCursor(SCREEN_WIDTH - (timerText.length() * 6), 0);
-    _display->display->print(timerText);
 
     if (sdCardModule.isCardInserted() && sdCardModule.isMounted() && sdCardModule.getCardInfo().isValid)
     {

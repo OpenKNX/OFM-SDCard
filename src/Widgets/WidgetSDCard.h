@@ -41,6 +41,7 @@ class WidgetSDCard : public Widget
     WidgetFlags _action;
     i2cDisplay *_display;
     std::string _name = "SD-Card";
+    uint32_t _duration_timerStart = 0;
 
     void drawSDInfo();
 };

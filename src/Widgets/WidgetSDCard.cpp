@@ -119,8 +119,17 @@ void WidgetSDCard::drawSDInfo()
 
     if (sdCardModule.isCardInserted() && sdCardModule.isMounted() && sdCardModule.getCardInfo().isValid)
     {
-        uint64_t freeBytes = 0, usedBytes = 0, totalBytes = sdCardModule.getSDCardSize();
-        if (totalBytes > 0 && sdCardModule.getSDCardUsage(freeBytes, usedBytes))
+        // Expensive usage query (exFAT scan ~100ms) only every SDINFO_USAGE_REFRESH_MS instead of every second
+        // -> no loop spike; the countdown redraw keeps running 1x/s but stays fast (uses the cache).
+        if (_lastUsageQuery == 0 || (uint32_t)(millis() - _lastUsageQuery) >= SDINFO_USAGE_REFRESH_MS)
+        {
+            _lastUsageQuery = millis();
+            uint64_t f = 0, u = 0, t = sdCardModule.getSDCardSize();
+            _cachedUsageValid = (t > 0 && sdCardModule.getSDCardUsage(f, u));
+            _cachedTotal = t; _cachedFree = f; _cachedUsed = u;
+        }
+        uint64_t freeBytes = _cachedFree, usedBytes = _cachedUsed, totalBytes = _cachedTotal;
+        if (_cachedUsageValid && totalBytes > 0)
         {
             float usedPercentage = (totalBytes > 0) ? ((float)usedBytes * 100.0f / totalBytes) : 0.0f;
 
@@ -169,6 +178,7 @@ void WidgetSDCard::drawSDInfo()
     }
     else
     {
+        _lastUsageQuery = 0; // invalidate cache -> re-query immediately on (re-)mount
 
         String CardMessage1 = "SD-CARD REMOVED.";
         String CardMessage2 = "Please insert card.";

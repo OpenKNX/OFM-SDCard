@@ -77,7 +77,7 @@ void SDCardModule::setup(bool configured)
 
     #ifdef DEVICE_DISPLAY_MODULE
     WidgetSDCard *sdCardWidget = new WidgetSDCard(30000, WidgetFlags::DefaultWidget); // Create a new SD Card widget
-    openknxDisplayModule.widgetManager.addWidget(sdCardWidget);                       // Add the widget to the widget manager queue.
+    openknxDisplayModule.getWidgetManager()->addWidget(sdCardWidget);                 // Add the widget to the widget manager queue.
     #endif
 }
 

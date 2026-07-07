@@ -43,6 +43,14 @@ class WidgetSDCard : public Widget
     std::string _name = "SD-Card";
     uint32_t _duration_timerStart = 0;
 
+    // Cache for the expensive SD usage query (getSDCardSize/getSDCardUsage = exFAT scan ~100ms).
+    // Without the cache the scan would run on every drawSDInfo() (1x/s) -> ~102ms loop spike every second.
+    // Usage practically never changes -> query every 30s; the 1s redraw stays fast.
+    static constexpr uint32_t SDINFO_USAGE_REFRESH_MS = 30000;
+    uint32_t _lastUsageQuery = 0;
+    bool _cachedUsageValid = false;
+    uint64_t _cachedTotal = 0, _cachedUsed = 0, _cachedFree = 0;
+
     void drawSDInfo();
 };
 

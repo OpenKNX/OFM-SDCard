@@ -12,6 +12,23 @@
     "type": "git",
     "url": "https://github.com/OpenKNX/OFM-SDCard.git"
   },
+  "keywords": [
+    "openknx",
+    "sd",
+    "sdcard",
+    "storage",
+    "filesystem",
+    "sdfat",
+    "fat32",
+    "exfat",
+    "spi"
+  ],
+  "license": "GPL-3.0-or-later",
+  "frameworks": ["arduino"],
+  "platforms": [
+    "espressif32",
+    "raspberrypi"
+  ],
   "dependencies": {
     "greiman/SdFat": "^2.3.0"
   }

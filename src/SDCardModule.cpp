@@ -77,8 +77,14 @@ void SDCardModule::setup(bool configured)
 
     #ifdef DEVICE_DISPLAY_MODULE
     WidgetSDCard *sdCardWidget = new WidgetSDCard(30000, WidgetFlags::DefaultWidget); // Create a new SD Card widget
-    openknxDisplayModule.getWidgetManager()->addWidget(sdCardWidget);                 // Add the widget to the widget manager queue.
-    #endif
+    openknxDisplayModule.tryAddWidget(sdCardWidget); // Add the widget to the widget manager queue (safe no-op if absent).
+
+    WidgetFileBrowser *fileBrowserWidget = new WidgetFileBrowser(
+        4500, static_cast<WidgetFlags>(WidgetFlags::ManagedExternally | WidgetFlags::Background | WidgetFlags::WantsButtonInput));
+    if (openknxDisplayModule.tryAddWidget(fileBrowserWidget)) // safe no-op (and delete) if absent.
+        _fileBrowser = fileBrowserWidget;
+    registerSdMenu();
+    #endif // DEVICE_DISPLAY_MODULE
 }
 
 /**
@@ -99,6 +105,12 @@ void SDCardModule::loop(bool configured)
         }
         _mount(); // State machine for card operations
     }
+
+    #ifdef DEVICE_DISPLAY_MODULE
+    _serviceFileBrowser();
+    #endif
+
+    tickUsageScan(); // Non-blocking incremental free-cluster scan (if running)
 }
 
 /**
@@ -691,6 +703,7 @@ void SDCardModule::_mount()
         case MOUNT_STEP_MOUNT:
         {
             _mountStep = MOUNT_STATE_MOUNTED; // Reset the mount step
+            _sdInfoGeneration++; // Increment the generation counter to indicate that the SD-Card state has changed
             logInfoP("SD-Card successfully mounted!");
             resetCardInfo(); // Reset the card info to be sure we read the info again
             info();
@@ -754,6 +767,7 @@ bool SDCardModule::Unmount(bool force)
     SPI_SD.end();
     logDebugP("SPI for SD-Card closed!");
     _mountStep = MOUNT_STATE_UNMOUNTED; // Reset the mount step
+    _sdInfoGeneration++; // Increment the generation counter to indicate that the SD-Card state has changed
     return true;
 }
 
@@ -1484,6 +1498,52 @@ std::vector<String> SDCardModule::getFileList(const char *path)
 }
 
 /**
+ * @brief Single-pass directory listing for the device-display file browser.
+ *
+ * Collects name, directory flag and size for every child of @p path in ONE
+ * openNextFile() loop, reusing the already-open FSFILE for isDirectory()/size()
+ * instead of re-opening each entry (as Statistics() would). The public signature
+ * exposes only SdDirEntry, keeping it free of any SdFat/FSFILE type.
+ *
+ * Nothing is listed unless the card isMounted(); in that case @p out is left
+ * untouched (i.e. empty when the caller passes an empty vector). @p maxEntries
+ * bounds the number of appended entries to limit RAM use and loop time; a value
+ * of 0 means "no cap".
+ *
+ * @param path        The directory to list.
+ * @param out         Vector the entries are appended to (not cleared here).
+ * @param maxEntries  Maximum entries to append (0 = unlimited).
+ * @return The number of entries appended to @p out.
+ */
+size_t SDCardModule::listDir(const char *path, std::vector<SdDirEntry> &out, size_t maxEntries)
+{
+    if (!isMounted()) return 0;
+    FSFILE dir = _sd.open(path);
+    if (!dir) return 0;
+
+    size_t count = 0;
+    char buffer[256];
+    while (FSFILE file = dir.openNextFile())
+    {
+        if (maxEntries != 0 && count >= maxEntries)
+        {
+            file.close();
+            break;
+        }
+        SdDirEntry entry;
+        file.getName(buffer, sizeof(buffer));
+        entry.name = buffer;
+        entry.isDir = file.isDirectory();
+        entry.size = entry.isDir ? 0 : (uint64_t)file.size();
+        file.close();
+        out.push_back(entry);
+        count++;
+    }
+    dir.close();
+    return count;
+}
+
+/**
  * @brief Convert FAT date and time to Unix timestamp.
  *
  * This function converts a FAT date and time to a Unix timestamp.
@@ -1599,6 +1659,167 @@ bool SDCardModule::getSDCardUsage(uint64_t &freeSpace, uint64_t &usedSpace)
 }
 
 /**
+ * @brief  Start an incremental scan of the SD card's usage (free/used clusters).
+ * 
+ * This function initiates a scan of the SD card's file system to determine the number of free and used clusters.
+ * It supports FAT16, FAT32, and exFAT file systems. The scan is performed incrementally to avoid
+ * blocking the main loop, and it can be ticked in the main loop
+ */
+void SDCardModule::beginUsageScan()
+{
+    if (isUsageScanRunning()) return; // one pass at a time
+    if (!isMounted()) return;
+
+    FSVOlUME *vol = _sd.vol();
+    if (!vol) return;
+
+    const uint8_t ft = _sd.fatType();
+    _usClusterSizeBytes = vol->bytesPerCluster();
+    _usTotalClusters = vol->clusterCount();
+    _usFreeClusters = 0;
+    _usCluster = 0;
+    if (_usTotalClusters == 0 || _usClusterSizeBytes == 0) return;
+
+    if (ft == FAT_TYPE_FAT32 || ft == FAT_TYPE_FAT16)
+    {
+        _usEntryWidth = (ft == FAT_TYPE_FAT32) ? 4 : 2;
+        const uint32_t fatStart = vol->fatStartSector();
+        const uint32_t entries = _usTotalClusters + 2; // FAT covers clusters 0..(total+1)
+        const uint32_t fatSectors = ((entries * _usEntryWidth) + 511u) / 512u;
+        _usSector = fatStart;
+        _usEndSector = fatStart + fatSectors;
+        _usState = UsageScanState::ScanFat;
+    }
+    else if (ft == FAT_TYPE_EXFAT)
+    {
+        // exFAT allocation bitmap: 1 bit per cluster (0 = free), bit i => cluster (i+2). Standard
+        // layout places the bitmap on cluster 2, i.e. starting at dataStartSector().
+        const uint32_t bmpStart = vol->dataStartSector();
+        const uint32_t bmpSectors = (((_usTotalClusters + 7u) / 8u) + 511u) / 512u;
+        _usSector = bmpStart;
+        _usEndSector = bmpStart + bmpSectors;
+        _usState = UsageScanState::ScanBitmap;
+    }
+    else
+    {
+        _usState = UsageScanState::Idle; // FAT12 / unknown -> not supported by the incremental path
+        return;
+    }
+    _usScanStartMs = millis();
+    _usWorstTickUs = 0;
+    logDebugP("Usage scan START (fatType=%u, clusters=%lu, sectors=%lu)", ft,
+              (unsigned long)_usTotalClusters, (unsigned long)(_usEndSector - _usSector));
+}
+
+/**
+ * @brief  Advance the incremental scan of the SD card's usage by a bounded number of sectors.
+ * 
+ * This function should be called repeatedly in the main loop to continue the scan. It processes
+ * a limited number of sectors per call to avoid blocking the main loop. Returns true while a scan
+ * is still running.
+ */
+bool SDCardModule::tickUsageScan()
+{
+    if (_usState != UsageScanState::ScanFat && _usState != UsageScanState::ScanBitmap)
+        return false;
+
+    auto *card = _sd.card();
+    if (!card)
+    {
+        _usState = UsageScanState::Idle;
+        return false;
+    }
+
+    const uint32_t tickStartUs = micros();  // diagnostics: measure this tick's duration
+    constexpr uint8_t SECTORS_PER_TICK = 8; // ~4 KB/loop -> a few ms, keeps the loop responsive
+    for (uint8_t n = 0; n < SECTORS_PER_TICK && _usSector < _usEndSector; ++n)
+    {
+        if (!card->readSector(_usSector, _usSectorBuf))
+        {
+            _usState = UsageScanState::Idle; // read error -> abort, keep the last valid result
+            return false;
+        }
+        _usSector++;
+
+        if (_usState == UsageScanState::ScanFat)
+        {
+            const uint16_t perSector = (uint16_t)(512u / _usEntryWidth);
+            for (uint16_t i = 0; i < perSector; ++i)
+            {
+                const uint32_t cl = _usCluster++;
+                if (cl >= _usTotalClusters + 2) break;
+                if (cl < 2) continue; // clusters 0,1 are reserved, never "free"
+                uint32_t entry;
+                if (_usEntryWidth == 4)
+                {
+                    const uint8_t *p = &_usSectorBuf[i * 4];
+                    entry = ((uint32_t)p[0]) | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+                    entry &= 0x0FFFFFFFu;
+                }
+                else
+                {
+                    const uint8_t *p = &_usSectorBuf[i * 2];
+                    entry = ((uint16_t)p[0]) | ((uint16_t)p[1] << 8);
+                }
+                if (entry == 0) _usFreeClusters++;
+            }
+        }
+        else // ScanBitmap (exFAT)
+        {
+            for (uint16_t b = 0; b < 512 && _usCluster < _usTotalClusters; ++b)
+            {
+                const uint8_t byte = _usSectorBuf[b];
+                for (uint8_t bit = 0; bit < 8; ++bit)
+                {
+                    const uint32_t cl = _usCluster++;
+                    if (cl >= _usTotalClusters) break;
+                    if ((byte & (1u << bit)) == 0) _usFreeClusters++;
+                }
+            }
+        }
+    }
+
+    const uint32_t tickUs = micros() - tickStartUs; // diagnostics: track the worst single tick
+    if (tickUs > _usWorstTickUs) _usWorstTickUs = tickUs;
+
+    const bool done = (_usSector >= _usEndSector) ||
+                      (_usState == UsageScanState::ScanFat && _usCluster >= _usTotalClusters + 2) ||
+                      (_usState == UsageScanState::ScanBitmap && _usCluster >= _usTotalClusters);
+    if (done)
+    {
+        [[maybe_unused]] const uint32_t wallMs = millis() - _usScanStartMs; // only used by logDebugP (compiled out in release)
+        // Sanity guard: free must not exceed total (catches a wrong exFAT bitmap-start assumption).
+        if (_usFreeClusters <= _usTotalClusters)
+        {
+            _usResTotal = (uint64_t)_usTotalClusters * _usClusterSizeBytes;
+            _usResFree = (uint64_t)_usFreeClusters * _usClusterSizeBytes;
+            _usResUsed = _usResTotal - _usResFree;
+            _usResValid = true;
+            logDebugP("Usage scan DONE: %lu/%lu clusters free; wall=%lu ms, worstTick=%lu us",
+                      (unsigned long)_usFreeClusters, (unsigned long)_usTotalClusters, (unsigned long)wallMs, (unsigned long)_usWorstTickUs);
+        }
+        else
+        {
+            _usResValid = false;
+            logDebugP("Usage scan DISCARDED (free>total; wall=%lu ms, worstTick=%lu us)", (unsigned long)wallMs, (unsigned long)_usWorstTickUs);
+        }
+        _usState = UsageScanState::Done;
+        return false;
+    }
+    return true;
+}
+
+// Read the last completed incremental scan result. False until the first scan has finished.
+bool SDCardModule::getCachedUsage(uint64_t &freeSpace, uint64_t &usedSpace, uint64_t &totalSpace) const
+{
+    if (!_usResValid) return false;
+    freeSpace = _usResFree;
+    usedSpace = _usResUsed;
+    totalSpace = _usResTotal;
+    return true;
+}
+
+/**
  * @brief Format a size in bytes to a human-readable format.
  *
  * This function formats a size in bytes to a human-readable format (e.g., KB, MB, GB, etc.).
@@ -1647,6 +1868,41 @@ String SDCardModule::getFsType()
 }
 
 /**
+ * @brief Get the volume label of the SD card.
+ *
+ * @return The volume label of the SD card, or an empty String if unavailable.
+ */
+String SDCardModule::getVolumeLabel()
+{
+    if (!isMounted()) return String();
+
+    uint8_t buffer[512];
+    if (!_sd.card()->readSector(0, buffer)) return String();
+
+    char raw[33] = {0};
+    size_t rawLen = 0;
+
+    if (_sd.fatType() == FAT_TYPE_EXFAT)
+    {
+        // exFAT: no ASCII label in the BPB; the real label lives in a root-dir entry (not read here).
+        return String();
+    }
+    else
+    {
+        // FAT16/FAT32: 11-byte space-padded volume label in the boot sector (offset 0x2B/0x47)
+        const size_t off = (_sd.fatType() == FAT_TYPE_FAT32) ? 0x47 : 0x2B;
+        rawLen = 11;
+        memcpy(raw, &buffer[off], rawLen);
+    }
+
+    // Trim trailing spaces / NULs.
+    while (rawLen > 0 && (raw[rawLen - 1] == ' ' || raw[rawLen - 1] == '\0'))
+        raw[--rawLen] = '\0';
+
+    return String(raw);
+}
+
+/**
  *
  * @brief Get the SD card informations such as manufacturer, product name, revision, serial number, etc.
  * @param info The structure to store the SD card information.
@@ -1673,8 +1929,6 @@ bool SDCardModule::readCardInfo(CardInfo &info)
 
     info.manufacturer = manufacturers.count(cid.mid) ? manufacturers.at(cid.mid) : "Unknown";
     logDebugP("Manufacturer: %02X", cid.mid);
-    
-
 
     info.productName = String(cid.pnm, 5);
 

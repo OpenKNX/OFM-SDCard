@@ -30,8 +30,10 @@
     #endif
 
     #ifdef DEVICE_DISPLAY_MODULE
+        #include "Menu/MenuConfig.h"
         #include "Widgets/WidgetSDCard.h"
-    #endif
+class WidgetFileBrowser;
+    #endif // DEVICE_DISPLAY_MODULE
 
     #define SDFAT_ SdFat
 
@@ -73,16 +75,22 @@ struct FileInfo
     bool isDir;
 };
 
+struct SdDirEntry
+{
+    String name;
+    bool isDir = false;
+    uint64_t size = 0;
+};
 
 struct CardInfo
 {
-  String manufacturer;
-  String productName;
-  String revision;
-  String serialNumber;
-  String manufactureDate;
-  String oemApplicationID;
-  bool isValid = false;
+    String manufacturer;
+    String productName;
+    String revision;
+    String serialNumber;
+    String manufactureDate;
+    String oemApplicationID;
+    bool isValid = false;
 };
 
 struct BootSectorInfo
@@ -147,6 +155,7 @@ class SDCardModule : public OpenKNX::Module
     bool mkdir(const char *path);
     bool rmdir(const char *path);
     std::vector<String> getFileList(const char *path);
+    size_t listDir(const char *path, std::vector<SdDirEntry> &out, size_t maxEntries = 0);
 
     inline const std::string name() { return SDCardModule_Display_Name; }
     inline const std::string version() { return SDCardModule_Display_Version; }
@@ -163,6 +172,12 @@ class SDCardModule : public OpenKNX::Module
 
     uint64_t getSDCardSize();
     bool getSDCardUsage(uint64_t &freeSpace, uint64_t &usedSpace);
+
+    void beginUsageScan();
+    bool tickUsageScan();
+    bool getCachedUsage(uint64_t &freeSpace, uint64_t &usedSpace, uint64_t &totalSpace) const;
+    inline bool isUsageScanRunning() const { return _usState == UsageScanState::ScanFat || _usState == UsageScanState::ScanBitmap; }
+
     bool readCardInfo(CardInfo &cardInfo);
     inline void resetCardInfo() { _cardInfo.isValid = false; }
     inline CardInfo getCardInfo() { return _cardInfo; }
@@ -183,6 +198,47 @@ class SDCardModule : public OpenKNX::Module
     time_t fatDateTimeToUnix(uint16_t fatDate, uint16_t fatTime);
     BootSectorInfo getBootSectorInfo(int fsType);
 
+    #ifdef DEVICE_DISPLAY_MODULE
+    MenuConfig::MenuOption buildSdMenu();
+    void registerSdMenu();
+    struct SdInfoCache
+    {
+        bool valid = false;
+        uint32_t refreshedAt = 0;
+        uint32_t mountGeneration = 0;
+        std::string type;
+        std::string fs;
+        std::string label;
+        std::string capacity;
+        std::string freeSpace;
+        std::string usedSpace;
+    };
+    void _refreshSdInfoCache(bool force = false);
+    static constexpr const char *SD_INFO_HINT = "-";
+    static constexpr uint32_t SD_INFO_CACHE_MIN_INTERVAL_MS = 2000;
+    SdInfoCache _sdInfoCache;
+
+    enum class SdFormatOp
+    {
+        None,
+        Quick,
+        ExFat,
+        LowLevel
+    };
+    void _requestSdFormatConfirm(SdFormatOp op);
+
+    void _menuActionSdInfo();
+    void _menuActionPartitionInfo();
+    void _menuActionSafeEject();
+    void _menuActionFileBrowser();
+    void _serviceFileBrowser();
+    void _hideFileBrowser();
+
+    WidgetFileBrowser *_fileBrowser = nullptr;
+    bool _fileBrowserOpen = false;
+    bool _fileBrowserActivated = false;
+    #endif // DEVICE_DISPLAY_MODULE
+
     MountStep _mountStep = MOUNT_STEP_INIT; // Default mount step - Initialize SPI
     uint32_t _cardDetectTimer = 0;          // Timer for card detection
     uint32_t _cardMountTimer = 0;           // Delay for card mount
@@ -193,8 +249,34 @@ class SDCardModule : public OpenKNX::Module
     CardInfo _cardInfo = {"", "", "", "", "", "", false};
     SDFAT_ _sd;
     uint8_t _chipSelectPin;
+    uint32_t _sdInfoGeneration = 0;
+
+    enum class UsageScanState : uint8_t
+    {
+        Idle, // Scan not started
+        ScanFat, // Scan the FAT to count free clusters
+        ScanBitmap,  // Scan the bitmap to count free clusters (exFAT only)
+        Done // Scan completed, results are cached
+    };
+    UsageScanState _usState = UsageScanState::Idle;
+    uint32_t _usSector = 0;
+    uint32_t _usEndSector = 0;
+    uint32_t _usCluster = 0;
+    uint32_t _usTotalClusters = 0;
+    uint32_t _usFreeClusters = 0;
+    uint32_t _usClusterSizeBytes = 0;
+    uint8_t _usEntryWidth = 0;
+    uint64_t _usResFree = 0, _usResUsed = 0, _usResTotal = 0;
+    bool _usResValid = false;
+    uint8_t _usSectorBuf[512];
+    uint32_t _usScanStartMs = 0;
+    uint32_t _usWorstTickUs = 0;
 };
 
 extern SDCardModule sdCardModule;
+
+    #ifdef DEVICE_DISPLAY_MODULE
+        #include "Widgets/WidgetFileBrowser.h"
+    #endif
 
 #endif // OPENKNX_SD_CARD_MODULE_ENABLE

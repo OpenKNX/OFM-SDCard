@@ -119,14 +119,22 @@ void WidgetSDCard::drawSDInfo()
 
     if (sdCardModule.isCardInserted() && sdCardModule.isMounted() && sdCardModule.getCardInfo().isValid)
     {
-        // Expensive usage query (exFAT scan ~100ms) only every SDINFO_USAGE_REFRESH_MS instead of every second
-        // -> no loop spike; the countdown redraw keeps running 1x/s but stays fast (uses the cache).
+        // Free/used come from the NON-BLOCKING incremental scan: SDCardModule advances the FAT /
+        // exFAT-bitmap count a few sectors per loop() (never a single spike). We only (re)TRIGGER a
+        // scan here — on mount (_lastUsageQuery == 0) and then periodically — and read the last
+        // COMPLETED result via getCachedUsage(). Because triggering is free, refreshing often is now
+        // safe. The 1x/s countdown redraw just reuses whatever result is cached.
         if (_lastUsageQuery == 0 || (uint32_t)(millis() - _lastUsageQuery) >= SDINFO_USAGE_REFRESH_MS)
         {
             _lastUsageQuery = millis();
-            uint64_t f = 0, u = 0, t = sdCardModule.getSDCardSize();
-            _cachedUsageValid = (t > 0 && sdCardModule.getSDCardUsage(f, u));
-            _cachedTotal = t; _cachedFree = f; _cachedUsed = u;
+            sdCardModule.beginUsageScan(); // non-blocking; result lands over the next loops
+        }
+        {
+            uint64_t f = 0, u = 0, t = 0;
+            _cachedUsageValid = sdCardModule.getCachedUsage(f, u, t);
+            _cachedTotal = t;
+            _cachedFree = f;
+            _cachedUsed = u;
         }
         uint64_t freeBytes = _cachedFree, usedBytes = _cachedUsed, totalBytes = _cachedTotal;
         if (_cachedUsageValid && totalBytes > 0)

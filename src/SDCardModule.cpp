@@ -164,8 +164,10 @@ bool SDCardModule::processCommand(const std::string command, bool diagnose)
             openknx.logger.color(0);
             openknx.logger.end();
         }
-        else if (command.compare(4, 4, "info") == 0)
+        else if (command.compare(4, 1, "i") == 0 &&
+                 (command.length() == 5 || command.compare(4, 4, "info") == 0))
         {
+            // "sdc i" and "sdc info" both show the card information.
             info();
         }
         else if (command.compare(4, 6, "format") == 0)
@@ -252,7 +254,7 @@ bool SDCardModule::processCommand(const std::string command, bool diagnose)
                 bRet = false;
             }
         }
-        else if (command.compare(4, 3, "ll ") == 0)
+        else if (command.compare(4, 2, "ll") == 0 && (command.length() == 6 || command[6] == ' '))
         {
             if (!isCardInserted() || !isMounted())
             {
@@ -260,7 +262,8 @@ bool SDCardModule::processCommand(const std::string command, bool diagnose)
                 return false;
             }
             logInfoP("SD-Card Files:");
-            String path = command.substr(7).c_str();
+            // "sdc ll", "sdc ll " and "sdc ll /" all list root; guard substr so bare "sdc ll" cannot throw.
+            String path = (command.length() > 7) ? String(command.substr(7).c_str()) : String("/");
             path = path.length() == 0 ? "/" : path;
             std::vector<String> files = getFileList(path.c_str());
             openknx.logger.begin();
@@ -378,18 +381,19 @@ bool SDCardModule::processCommand(const std::string command, bool diagnose)
             openknx.logger.color(0);
             openknx.logger.end();
         }
-        else if (command.compare(4, 3, "ls ") == 0)
+        else if (command.compare(4, 2, "ls") == 0 && (command.length() == 6 || command[6] == ' '))
         {
             if (!isCardInserted() || !isMounted())
             {
                 logErrorP("No SD card inserted or mounted!");
                 return false;
             }
-            String path = command.substr(7).c_str();
+            // "sdc ls", "sdc ls " and "sdc ls /" all list root; guard substr so bare "sdc ls" cannot throw.
+            String path = (command.length() > 7) ? String(command.substr(7).c_str()) : String("/");
             std::vector<String> files = getFileList(path.length() > 0 ? path.c_str() : "/");
             for (String file : files)
             {
-                logInfoP("%s", file.c_str());
+                openknx.logger.log(file.c_str());
             }
         }
         else if (command.compare(4, 6, "mkdir ") == 0)
@@ -465,10 +469,18 @@ bool SDCardModule::processCommand(const std::string command, bool diagnose)
                 logErrorP("No SD card inserted or mounted!");
                 return false;
             }
+            // "sdc cat /<file>": guard the length before substr() - a too-short command would make
+            // std::string::substr(9) throw, and an uncaught exception reboots the ESP.
+            if (command.length() <= 9)
+            {
+                logErrorP("Usage: sdc cat /<file>");
+                return false;
+            }
             logInfoP("Reading file and will show the first %d bytes of the file content.", OPENKNX_MAX_LOG_MESSAGE_LENGTH);
             String fileName = command.substr(9).c_str();
             uint8_t buffer[OPENKNX_MAX_LOG_MESSAGE_LENGTH];
             size_t bytesRead = read(fileName.c_str(), buffer, sizeof(buffer) - 1); // Reserve space for null terminator
+            if (bytesRead >= sizeof(buffer)) bytesRead = sizeof(buffer) - 1;       // defensive: never index past buffer
             if (bytesRead > 0)
             {
                 buffer[bytesRead] = '\0'; // Null-terminate the buffer for printing as a string in log message
@@ -1403,12 +1415,13 @@ bool SDCardModule::exists(const char *path)
  */
 size_t SDCardModule::read(const char *path, uint8_t *buffer, size_t size)
 {
-    if (!isMounted()) return 0;
+    if (!isMounted() || buffer == nullptr || size == 0) return 0;
     FSFILE file = open(path, "r");
     if (!file) return 0;
-    size_t bytesRead = file.read(buffer, size);
+    const int bytesRead = file.read(buffer, size); // int: -1 on error
     file.close();
-    return bytesRead;
+    // Never leak a -1 into size_t (would become SIZE_MAX and overflow callers, e.g. buffer[bytesRead]).
+    return (bytesRead > 0) ? static_cast<size_t>(bytesRead) : 0;
 }
 
 /**

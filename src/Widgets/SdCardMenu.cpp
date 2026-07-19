@@ -286,6 +286,14 @@ void SDCardModule::_menuActionFileBrowser()
     _fileBrowser->addAction(static_cast<uint8_t>(
         WidgetFlags::DisplayEnabled | WidgetFlags::Background |
         WidgetFlags::WantsButtonInput | WidgetFlags::ManagedExternally));
+
+    // The menu MUST release the screen here. findActiveBackgroundWidget() returns the first
+    // background widget carrying DisplayEnabled|ManagedExternally, and the menu sits ahead of the
+    // browser in that list — so while both are enabled the browser is drawn but the MENU receives
+    // every button. That also stalls _serviceFileBrowser(), whose activation latch waits for the
+    // browser to become the active button widget, which then never happens.
+    openknxDisplayModule.setMenuDisplayEnabled(false);
+
     _fileBrowser->start(); // resets to root "/" + reloads the listing (WidgetFileBrowser::start())
     _fileBrowserOpen = true;
     _fileBrowserActivated = false; // not yet observed in front; latched by _serviceFileBrowser()
@@ -348,6 +356,11 @@ void SDCardModule::_hideFileBrowser()
     // later reactivation only needs to re-add DisplayEnabled + start().
     _fileBrowser->removeAction(static_cast<uint8_t>(WidgetFlags::DisplayEnabled));
     _fileBrowser->stop();
+
+    // Give the screen back to the menu (released in _menuActionFileBrowser()); it still holds its
+    // tree and cursor, so it reappears on the SD submenu where the user left it.
+    openknxDisplayModule.setMenuDisplayEnabled(true);
+
     logInfoP("Files: file browser closed");
 }
 

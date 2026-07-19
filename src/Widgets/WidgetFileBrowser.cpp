@@ -39,7 +39,8 @@ void WidgetFileBrowser::start()
     logDebugP("Starting...");
     _state = WidgetState::RUNNING;
 
-    // (re)open at the SD root every time the browser is shown.
+    // (re)open at the SD root every time the browser is shown, on the list view.
+    _view = View::List;
     pathStack.clear();
     _resetView();
     reload();
@@ -81,12 +82,26 @@ void WidgetFileBrowser::loop()
     if (_state != WidgetState::RUNNING || !_display)
         return;
 
-    if (_needsReload)
+    // Only the list view reads the FS; the overlays work off the captured snapshot.
+    if (_view == View::List && _needsReload)
         reload();
+
+    // Drive the rename-cursor blink (~500ms) so it toggles without a button press.
+    if (_view == View::Rename && (millis() - _blinkLast) >= BLINK_MS)
+    {
+        _blinkOn = !_blinkOn;
+        _blinkLast = millis();
+    }
 
     // Listing is cached (reload() only re-reads on folder change / explicit reload),
     // so this is a cheap buffer redraw, not an FS read per frame.
-    drawBrowser();
+    switch (_view)
+    {
+        case View::List: drawBrowser(); break;
+        case View::FileInfo: drawFileInfo(); break;
+        case View::ConfirmDelete: drawConfirmDelete(); break;
+        case View::Rename: drawRename(); break;
+    }
 }
 
 uint32_t WidgetFileBrowser::getDisplayTime() const
@@ -331,7 +346,21 @@ bool WidgetFileBrowser::handleButtonEvent(const ButtonEvent &event)
     if (event.action != ButtonAction::PRESS)
         return false;
 
-    // Make sure the listing is current before acting on it.
+    switch (_view)
+    {
+        case View::List: return handleListButton(event);
+        case View::FileInfo: return handleFileInfoButton(event);
+        case View::ConfirmDelete: return handleConfirmDeleteButton(event);
+        case View::Rename: return handleRenameButton(event);
+    }
+    return false;
+}
+
+// LEFT navigation model (user spec): not on the first row -> jump to the first row; on the first
+// row inside a sub-directory -> up one level; on the first row at the SD root (or empty) -> leave
+// the browser (drop DisplayEnabled; the menu regains the screen at the SD submenu).
+bool WidgetFileBrowser::handleListButton(const ButtonEvent &event)
+{
     if (_needsReload)
         reload();
 
@@ -356,47 +385,430 @@ bool WidgetFileBrowser::handleButtonEvent(const ButtonEvent &event)
             return true;
 
         case ButtonType::LEFT:
-            // Up one level; at the SD root hand control back to the menu (mock: files->menu).
-            if (!goUp())
+            if (total == 0) // empty root -> nothing to browse, leave
             {
-                // At the SD root, hand the display back ourselves by dropping DisplayEnabled:
-                // returning false won't close us because DeviceDisplay only wakes on a non-consumed
-                // event, so the browser would stay stuck open. Consume the event afterwards.
                 removeAction(static_cast<uint8_t>(WidgetFlags::DisplayEnabled));
                 return true;
             }
-            reload();
-            drawBrowser();
+            if (_selectedIndex != 0) // not on the first row -> jump to the top
+            {
+                _selectedIndex = 0;
+                _windowStart = 0;
+                drawBrowser();
+                return true;
+            }
+            if (hasUp) // first row inside a sub-directory -> up one level
+            {
+                goUp();
+                reload();
+                drawBrowser();
+                return true;
+            }
+            // First row at the SD root -> hand control back to the menu.
+            removeAction(static_cast<uint8_t>(WidgetFlags::DisplayEnabled));
             return true;
 
         case ButtonType::RIGHT:
         case ButtonType::SELECT:
-            // OK/RIGHT: activate the selected row (up-entry -> goUp, folder -> enterDir,
-            // file -> file action). File actions are not wired yet; for now this is a no-op
-            // that still consumes the event so the browser stays put.
             if (total == 0)
                 return true;
-            if (hasUp && _selectedIndex == 0)
+            if (hasUp && _selectedIndex == 0) // ".." up-entry
             {
                 goUp();
                 reload();
+                drawBrowser();
+                return true;
             }
-            else
             {
                 const SdDirEntry &e = _entries[_selectedIndex - upCount];
                 if (e.isDir)
                 {
                     enterDir(e.name);
                     reload();
+                    drawBrowser();
                 }
-                // else: file selected -> file-action overlay not yet wired.
+                else
+                {
+                    openFileInfo(e); // file -> Name/Size/Erstellt + Loeschen/Umbenennen overlay
+                    drawFileInfo();
+                }
             }
-            drawBrowser();
             return true;
 
         default:
             return false;
     }
+}
+
+// FileInfo overlay: UP/DOWN move the action cursor, OK activates, LEFT returns to the listing.
+bool WidgetFileBrowser::handleFileInfoButton(const ButtonEvent &event)
+{
+    switch (event.type)
+    {
+        case ButtonType::UP:
+            _infoSel = (_infoSel == 0) ? 2 : (uint8_t)(_infoSel - 1);
+            drawFileInfo();
+            return true;
+
+        case ButtonType::DOWN:
+            _infoSel = (uint8_t)((_infoSel + 1) % 3);
+            drawFileInfo();
+            return true;
+
+        case ButtonType::LEFT:
+            _view = View::List;
+            drawBrowser();
+            return true;
+
+        case ButtonType::RIGHT:
+        case ButtonType::SELECT:
+            if (_infoSel == 0) // Loeschen -> confirm guard (default Nein)
+            {
+                _confirmSel = 0;
+                _view = View::ConfirmDelete;
+                drawConfirmDelete();
+            }
+            else if (_infoSel == 1) // Umbenennen -> char-scroll editor over the name
+            {
+                _rename = _selName;
+                if (_rename.empty())
+                    _rename = " ";
+                if (_rename.size() > NAME_EDIT_MAX)
+                    _rename.resize(NAME_EDIT_MAX);
+                _renameCursor = 0;
+                _blinkOn = true;
+                _blinkLast = millis();
+                _view = View::Rename;
+                drawRename();
+            }
+            else // Zurueck
+            {
+                _view = View::List;
+                drawBrowser();
+            }
+            return true;
+
+        default:
+            return true; // consume anything else while the overlay is up
+    }
+}
+
+// Delete guard, horizontal [Nein][Ja]: LEFT selects Nein, RIGHT selects Ja (LEFT does NOT exit).
+// UP/DOWN toggle. OK commits — Ja deletes, Nein returns to the file-info screen.
+bool WidgetFileBrowser::handleConfirmDeleteButton(const ButtonEvent &event)
+{
+    switch (event.type)
+    {
+        case ButtonType::LEFT:
+            _confirmSel = 0; // Nein (left button)
+            drawConfirmDelete();
+            return true;
+
+        case ButtonType::RIGHT:
+            _confirmSel = 1; // Ja (right button)
+            drawConfirmDelete();
+            return true;
+
+        case ButtonType::UP:
+        case ButtonType::DOWN:
+            _confirmSel = _confirmSel ? 0 : 1; // toggle
+            drawConfirmDelete();
+            return true;
+
+        case ButtonType::SELECT:
+            if (_confirmSel == 1)
+                doDelete(); // Ja -> remove + back to the reloaded list
+            else
+            {
+                _view = View::FileInfo; // Nein
+                drawFileInfo();
+            }
+            return true;
+
+        default:
+            return true;
+    }
+}
+
+// Rename editor (mirrors the MenuWidget char-scroll editor): UP/DOWN cycle the char at the cursor,
+// LEFT moves left (LEFT at 0 cancels), RIGHT moves/grows, OK commits.
+bool WidgetFileBrowser::handleRenameButton(const ButtonEvent &event)
+{
+    static const std::string CHARSET =
+        " ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-";
+    const size_t N = CHARSET.size();
+
+    switch (event.type)
+    {
+        case ButtonType::UP:
+        case ButtonType::DOWN:
+        {
+            if (_renameCursor >= _rename.size())
+                break;
+            size_t idx = CHARSET.find(_rename[_renameCursor]);
+            if (idx == std::string::npos)
+                idx = 0;
+            idx = (event.type == ButtonType::UP) ? (idx + 1) % N : (idx + N - 1) % N;
+            _rename[_renameCursor] = CHARSET[idx];
+            break;
+        }
+
+        case ButtonType::LEFT:
+            if (_renameCursor == 0)
+            {
+                _view = View::FileInfo; // cancel (no rename)
+                drawFileInfo();
+                return true;
+            }
+            _renameCursor--;
+            break;
+
+        case ButtonType::RIGHT:
+            if ((size_t)_renameCursor + 1 < _rename.size())
+                _renameCursor++;
+            else if (_rename.size() < NAME_EDIT_MAX)
+            {
+                _rename.push_back(' ');
+                _renameCursor = (uint8_t)(_rename.size() - 1);
+            }
+            break;
+
+        case ButtonType::SELECT:
+            commitRename();
+            return true;
+
+        default:
+            return true;
+    }
+
+    _blinkOn = true;
+    _blinkLast = millis();
+    drawRename();
+    return true;
+}
+
+std::string WidgetFileBrowser::fullPathOf(const std::string &name) const
+{
+    const std::string base = currentPath(); // "/" (root) or "/seg/seg"
+    if (base == "/")
+        return "/" + name;
+    return base + "/" + name;
+}
+
+void WidgetFileBrowser::openFileInfo(const SdDirEntry &e)
+{
+    _selName = e.name.c_str();
+    _selSize = e.size;
+    _selCtime = 0;
+
+    // Creation time via Statistics(folder, name) — it builds folder + "/" + name internally, so
+    // pass "" at the root to avoid a "//name" double slash.
+    const std::string base = currentPath();
+    const char *folder = (base == "/") ? "" : base.c_str();
+    FileInfo info;
+    if (sdCardModule.Statistics(folder, _selName.c_str(), info))
+        _selCtime = info.ctime;
+
+    _infoSel = 0;
+    _view = View::FileInfo;
+}
+
+void WidgetFileBrowser::doDelete()
+{
+    const std::string full = fullPathOf(_selName);
+    const bool ok = sdCardModule.remove(full.c_str());
+    logInfoP("Delete \"%s\": %s", full.c_str(), ok ? "ok" : "failed");
+    _view = View::List;
+    _needsReload = true;
+    reload();
+    drawBrowser();
+}
+
+void WidgetFileBrowser::commitRename()
+{
+    // Trim trailing spaces; an empty or unchanged name is a no-op back to the info screen.
+    const size_t end = _rename.find_last_not_of(' ');
+    const std::string newName = (end == std::string::npos) ? std::string() : _rename.substr(0, end + 1);
+    if (newName.empty() || newName == _selName)
+    {
+        _view = View::FileInfo;
+        drawFileInfo();
+        return;
+    }
+    const std::string oldFull = fullPathOf(_selName);
+    const std::string newFull = fullPathOf(newName);
+    const bool ok = sdCardModule.rename(oldFull.c_str(), newFull.c_str());
+    logInfoP("Rename \"%s\" -> \"%s\": %s", oldFull.c_str(), newFull.c_str(), ok ? "ok" : "failed");
+    _view = View::List;
+    _needsReload = true;
+    reload();
+    drawBrowser();
+}
+
+void WidgetFileBrowser::drawFileInfo()
+{
+    if (!_display)
+        return;
+    auto *d = _display->display;
+    const int16_t W = _display->GetDisplayWidth();
+
+    d->clearDisplay();
+    d->setTextWrap(false);
+    d->setTextSize(1);
+    d->setTextColor(WHITE);
+
+    // Title: file name (truncated) + separator.
+    std::string name = _selName;
+    const int cells = W / 6;
+    if (cells > 3 && (int)name.size() > cells)
+        name = name.substr(0, (size_t)cells - 3) + "...";
+    d->setCursor(0, 0);
+    d->print(name.c_str());
+    d->drawLine(0, 10, W, 10, WHITE);
+
+    // Info block: size + creation time.
+    char line[32];
+    snprintf(line, sizeof(line), "Groesse: %s", sdCardModule.formatSize(_selSize));
+    d->setCursor(0, 13);
+    d->print(line);
+
+    if (_selCtime != 0)
+    {
+        struct tm tmv;
+        gmtime_r(&_selCtime, &tmv);
+        snprintf(line, sizeof(line), "Erst: %02d.%02d.%02d %02d:%02d",
+                 tmv.tm_mday, tmv.tm_mon + 1, (tmv.tm_year + 1900) % 100, tmv.tm_hour, tmv.tm_min);
+    }
+    else
+        snprintf(line, sizeof(line), "Erst: --");
+    d->setCursor(0, 23);
+    d->print(line);
+
+    // Action rows: Loeschen / Umbenennen / Zurueck (selected row inverted).
+    static const char *const ACTIONS[3] = {"Loeschen", "Umbenennen", "Zurueck"};
+    const int16_t ROW_TOP = 36, ROW_H = 9;
+    int16_t y = ROW_TOP;
+    for (uint8_t i = 0; i < 3; i++, y += ROW_H)
+    {
+        if (i == _infoSel)
+        {
+            d->fillRect(0, y - 1, W, ROW_H, WHITE);
+            d->setTextColor(BLACK);
+        }
+        else
+            d->setTextColor(WHITE);
+        d->setCursor(2, y);
+        d->print(ACTIONS[i]);
+    }
+
+    d->setTextColor(WHITE);
+    _display->displayBuff();
+}
+
+void WidgetFileBrowser::drawConfirmDelete()
+{
+    if (!_display)
+        return;
+    auto *d = _display->display;
+    const int16_t W = _display->GetDisplayWidth();
+
+    d->clearDisplay();
+    d->setTextWrap(false);
+    d->setTextSize(1);
+    d->setTextColor(WHITE);
+
+    d->setCursor(0, 0);
+    d->print("Loeschen?");
+    d->drawLine(0, 10, W, 10, WHITE);
+
+    std::string name = _selName;
+    const int cells = W / 6;
+    if (cells > 3 && (int)name.size() > cells)
+        name = name.substr(0, (size_t)cells - 3) + "...";
+    d->setCursor(0, 16);
+    d->print(name.c_str());
+
+    // Two buttons [Nein] [Ja]; the selected one is filled, the other outlined.
+    static const char *const OPTS[2] = {"Nein", "Ja"};
+    const int16_t by = 40, bh = 14, bw = 50;
+    for (uint8_t i = 0; i < 2; i++)
+    {
+        const int16_t bx = (i == 0) ? 8 : (int16_t)(W - bw - 8);
+        if (i == _confirmSel)
+        {
+            d->fillRect(bx, by, bw, bh, WHITE);
+            d->setTextColor(BLACK);
+        }
+        else
+        {
+            d->drawRect(bx, by, bw, bh, WHITE);
+            d->setTextColor(WHITE);
+        }
+        const int16_t tw = (int16_t)(strlen(OPTS[i]) * 6);
+        d->setCursor((int16_t)(bx + (bw - tw) / 2), (int16_t)(by + 4));
+        d->print(OPTS[i]);
+    }
+
+    d->setTextColor(WHITE);
+    _display->displayBuff();
+}
+
+void WidgetFileBrowser::drawRename()
+{
+    if (!_display)
+        return;
+    auto *d = _display->display;
+    const int16_t W = _display->GetDisplayWidth();
+    const int16_t H = _display->GetDisplayHeight();
+
+    d->clearDisplay();
+    d->setTextWrap(false);
+
+    d->setTextSize(1);
+    d->setTextColor(WHITE);
+    d->setCursor(2, 0);
+    d->print("Umbenennen:");
+
+    // Characters at size 2, windowed so the cursor stays visible; the active cell blinks.
+    d->setTextSize(2);
+    const int16_t cellW = 12, cellH = 16;
+    const uint8_t visible = (uint8_t)((W - 4) / cellW);
+    uint8_t start = 0;
+    if (visible > 0 && _renameCursor >= visible)
+        start = (uint8_t)(_renameCursor - visible + 1);
+    const int16_t y = (int16_t)((H - cellH) / 2);
+
+    int16_t cx = 2;
+    for (uint8_t i = start; i < _rename.size() && i < start + visible; ++i)
+    {
+        const bool active = (i == _renameCursor);
+        const char c = _rename[i];
+        if (active)
+        {
+            if (_blinkOn)
+            {
+                d->fillRect(cx - 1, y - 1, cellW + 1, cellH + 1, WHITE);
+                d->setTextColor(BLACK);
+                d->setCursor(cx, y);
+                d->write((uint8_t)c);
+                d->setTextColor(WHITE);
+            }
+            // "off" phase: leave the active cell blank.
+        }
+        else
+        {
+            d->setTextColor(WHITE);
+            d->setCursor(cx, y);
+            d->write((uint8_t)c);
+        }
+        cx = (int16_t)(cx + cellW);
+    }
+
+    d->setTextSize(1);
+    d->setTextColor(WHITE);
+    d->setCursor(2, (int16_t)(H - 9));
+    d->print("OK=ok  <=zurueck");
+    _display->displayBuff();
 }
 
 #endif // DEVICE_DISPLAY_MODULE && OPENKNX_SD_CARD_MODULE_ENABLE

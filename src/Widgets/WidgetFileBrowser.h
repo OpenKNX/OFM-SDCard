@@ -21,6 +21,7 @@
 #include "DeviceDisplay.h"
 #endif
 
+#include <ctime>
 #include <string>
 #include <vector>
 
@@ -66,11 +67,37 @@ class WidgetFileBrowser : public Widget
     bool handleButtonEvent(const ButtonEvent &event) override;
 
   private:
-    void drawBrowser();
+    // Which sub-screen owns the input + display: the list, or a per-file overlay.
+    enum class View : uint8_t
+    {
+        List,          // directory listing (navigation)
+        FileInfo,      // Name/Size/Erstellt + [Loeschen] [Umbenennen] [Zurueck]
+        ConfirmDelete, // [Nein]/[Ja] guard before remove()
+        Rename         // char-scroll editor over the file name
+    };
 
+    void drawBrowser();
     void _updateWindow();
 
+    // Per-view button handlers (dispatched from handleButtonEvent by _view).
+    bool handleListButton(const ButtonEvent &event);
+    bool handleFileInfoButton(const ButtonEvent &event);
+    bool handleConfirmDeleteButton(const ButtonEvent &event);
+    bool handleRenameButton(const ButtonEvent &event);
+
+    // Per-view renderers.
+    void drawFileInfo();
+    void drawConfirmDelete();
+    void drawRename();
+
+    void openFileInfo(const SdDirEntry &e);                // capture file context + enter FileInfo
+    void doDelete();                                       // remove _selName, back to the (reloaded) list
+    void commitRename();                                   // rename _selName -> _rename, back to the list
+    std::string fullPathOf(const std::string &name) const; // "/name" at root, "/dir/name" else
+
     static constexpr size_t VISIBLE_ROWS = 5;
+    static constexpr uint8_t NAME_EDIT_MAX = 32; // char-scroll rename cap
+    static constexpr uint32_t BLINK_MS = 500;    // rename cursor blink
 
   private:
     WidgetState _state;
@@ -84,6 +111,18 @@ class WidgetFileBrowser : public Widget
     size_t _selectedIndex = 0;          // Index of the highlighted entry within _entries
     size_t _windowStart = 0;            // First visible entry index (scroll window top)
     bool _needsReload = true;           // Entry cache is stale; reload() required before use
+
+    // Per-file overlay state (FileInfo / ConfirmDelete / Rename).
+    View _view = View::List;
+    std::string _selName;    // captured file name for the active overlay
+    uint64_t _selSize = 0;   // captured size (bytes)
+    time_t _selCtime = 0;    // captured creation time (0 = unknown)
+    uint8_t _infoSel = 0;    // FileInfo action cursor: 0=Loeschen 1=Umbenennen 2=Zurueck
+    uint8_t _confirmSel = 0; // ConfirmDelete cursor: 0=Nein 1=Ja (default Nein)
+    std::string _rename;     // working copy for the rename editor
+    uint8_t _renameCursor = 0;
+    bool _blinkOn = true;
+    uint32_t _blinkLast = 0;
 
     // Reset selection + scroll window to the top of a freshly entered directory.
     inline void _resetView()

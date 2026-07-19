@@ -184,16 +184,68 @@ class SDCardModule : public OpenKNX::Module
     String getCardType(bool shortType = false);
     String getFsType();
     String getVolumeLabel();
+    bool setVolumeLabel(const char *name); // in-place relabel (exFAT root entry / FAT boot sector)
     String getPartitionType(uint8_t partitionType);
     const char *formatSize(uint64_t bytes);
+
+    // Non-blocking format: request an op (0=Quick MBR-wipe, 1=exFAT, 2=Low-Level zero-fill); the work
+    // runs incrementally from loop() (_serviceFormat), so it never stalls the loop / trips the watchdog.
+    void requestFormat(uint8_t op);
+    inline bool isFormatting() const { return _fmtOp != FmtOp::None; }
+    // Progress for the SD widget while a format runs. Percent is meaningful only for Low-Level
+    // (Quick/exFAT complete in a single tick); it returns 0 for those.
+    inline uint8_t formatPercent() const
+    {
+        return (_fmtOp == FmtOp::LowLevel && _fmtTotal) ? (uint8_t)((uint64_t)_fmtSector * 100 / _fmtTotal) : 0;
+    }
+    // Fine progress in HUNDREDTHS of a percent (0..10000 = 0.00..100.00 %) so the widget shows movement
+    // even though 1 % of a big card is millions of sectors.
+    inline uint16_t formatPermyriad() const
+    {
+        return (_fmtOp == FmtOp::LowLevel && _fmtTotal) ? (uint16_t)((uint64_t)_fmtSector * 10000 / _fmtTotal) : 0;
+    }
+    inline const char *formatOpName() const
+    {
+        switch (_fmtOp)
+        {
+            case FmtOp::Quick: return "Quick-Format";
+            case FmtOp::ExFat: return "Formatieren";
+            case FmtOp::LowLevel: return "Low-Level";
+            default: return "";
+        }
+    }
+    // True when a card is inserted but carries NO usable filesystem (after Quick/Low-Level, or a
+    // failed volume mount) -> the SD widget prompts the user to run a Format.
+    inline bool isCardUnformatted() const { return _cardUnformatted; }
 
   private:
     void _mount(); // No direct call, only for internal use
     bool _inMountingProcess();
     bool _inUnmountingProcess();
-    void lowLevelFormat();
-    void quickFormat();
     void readPartitionInfo();
+    // Compact one-line-per-row MBR/GPT info for on-display rendering (Partition-Info submenu).
+    // Bounded (capped partition count) so it never runs away on a corrupt table.
+    void readPartitionInfoLines(std::vector<std::string> &out);
+
+    // Non-blocking format state machine (driven from loop() via _serviceFormat).
+    enum class FmtOp : uint8_t
+    {
+        None,
+        Quick,
+        ExFat,
+        LowLevel
+    };
+    FmtOp _fmtOp = FmtOp::None;
+    uint32_t _fmtSector = 0;                             // Low-Level progress cursor
+    uint32_t _fmtTotal = 0;                              // Low-Level total sector count
+    uint32_t _fmtHeartbeat = 0;                          // last Low-Level heartbeat-log timestamp
+    bool _cardUnformatted = false;                       // card present but no usable filesystem (needs Format)
+    static constexpr uint32_t FMT_SECTORS_PER_WRITE = 8; // Low-Level multi-block chunk (4 KB per write)
+    static constexpr uint32_t FMT_TICK_BUDGET_MS = 8;    // cap each Low-Level tick (~8 ms -> loop < 50 ms, no warning)
+    static constexpr uint32_t FMT_HEARTBEAT_MS = 5000;   // Low-Level: log a progress heartbeat every 5 s
+    void _serviceFormat();                               // perform one incremental step of _fmtOp
+    void _closeCardAfterFormat();                        // park the card (end _sd + SPI) after Quick/Low-Level
+    void _formatToast(const char *msg);                  // brief on-screen message (no-op without a display)
 
     time_t fatDateTimeToUnix(uint16_t fatDate, uint16_t fatTime);
     BootSectorInfo getBootSectorInfo(int fsType);
@@ -218,17 +270,7 @@ class SDCardModule : public OpenKNX::Module
     static constexpr uint32_t SD_INFO_CACHE_MIN_INTERVAL_MS = 2000;
     SdInfoCache _sdInfoCache;
 
-    enum class SdFormatOp
-    {
-        None,
-        Quick,
-        ExFat,
-        LowLevel
-    };
-    void _requestSdFormatConfirm(SdFormatOp op);
-
     void _menuActionSdInfo();
-    void _menuActionPartitionInfo();
     void _menuActionSafeEject();
     void _menuActionFileBrowser();
     void _serviceFileBrowser();

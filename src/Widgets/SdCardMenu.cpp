@@ -23,148 +23,179 @@
 MenuConfig::MenuOption SDCardModule::buildSdMenu()
 {
     using MenuOption = MenuConfig::MenuOption;
-
-    // Each row's valueProvider() runs every frame, so none queries the card directly: they read
-    // _sdInfoCache, (re)populated at most once per open so the expensive getSDCardUsage() (walks the
-    // whole FAT) runs ≤1× per open, not per frame. Unmounted → cache invalid, rows show SD_INFO_HINT.
-    MenuOption info;
-    info.label = "Info";
-    info.type = MenuConfig::Submenu;
-    info.key = "sd_info";
-    {
-        MenuOption row;
-
-        row = MenuOption();
-        row.label = "Typ";
-        row.type = MenuConfig::Readonly;
-        row.key = "sd_info_type";
-        row.valueProvider = []() -> std::string {
-            sdCardModule._refreshSdInfoCache();
-            if (!sdCardModule._sdInfoCache.valid) return SD_INFO_HINT;
-            return sdCardModule._sdInfoCache.type;
-        };
-        info.submenu.push_back(row);
-
-        row = MenuOption();
-        row.label = "Kapazitaet";
-        row.type = MenuConfig::Readonly;
-        row.key = "sd_info_cap";
-        row.valueProvider = []() -> std::string {
-            sdCardModule._refreshSdInfoCache();
-            if (!sdCardModule._sdInfoCache.valid) return SD_INFO_HINT;
-            return sdCardModule._sdInfoCache.capacity;
-        };
-        info.submenu.push_back(row);
-
-        row = MenuOption();
-        row.label = "Frei";
-        row.type = MenuConfig::Readonly;
-        row.key = "sd_info_free";
-        row.valueProvider = []() -> std::string {
-            sdCardModule._refreshSdInfoCache();
-            if (!sdCardModule._sdInfoCache.valid) return SD_INFO_HINT;
-            return sdCardModule._sdInfoCache.freeSpace;
-        };
-        info.submenu.push_back(row);
-
-        row = MenuOption();
-        row.label = "Belegt";
-        row.type = MenuConfig::Readonly;
-        row.key = "sd_info_used";
-        row.valueProvider = []() -> std::string {
-            sdCardModule._refreshSdInfoCache();
-            if (!sdCardModule._sdInfoCache.valid) return SD_INFO_HINT;
-            return sdCardModule._sdInfoCache.usedSpace;
-        };
-        info.submenu.push_back(row);
-
-        row = MenuOption();
-        row.label = "FS";
-        row.type = MenuConfig::Readonly;
-        row.key = "sd_info_fs";
-        row.valueProvider = []() -> std::string {
-            sdCardModule._refreshSdInfoCache();
-            if (!sdCardModule._sdInfoCache.valid) return SD_INFO_HINT;
-            return sdCardModule._sdInfoCache.fs;
-        };
-        info.submenu.push_back(row);
-
-        row = MenuOption();
-        row.label = "Label";
-        row.type = MenuConfig::Readonly;
-        row.key = "sd_info_label";
-        row.valueProvider = []() -> std::string {
-            sdCardModule._refreshSdInfoCache();
-            if (!sdCardModule._sdInfoCache.valid) return SD_INFO_HINT;
-            // Empty volume label → dash so the row never renders blank.
-            return sdCardModule._sdInfoCache.label.empty() ? std::string(SD_INFO_HINT)
-                                                           : sdCardModule._sdInfoCache.label;
-        };
-        info.submenu.push_back(row);
-
-        row = MenuOption();
-        row.label = "< Zurueck";
-        row.type = MenuConfig::Back;
-        info.submenu.push_back(row);
-    }
+    using MenuBuild::addRow; // rows are built in the vector, not on the stack — see MenuConfig.h
 
     MenuOption sd;
     sd.label = "SD-Karte";
     sd.type = MenuConfig::Submenu;
     sd.key = "sd_root";
-    {
-        MenuOption files;
+    // Sit after Home-Tasten (60), before the pinned-last "Ueber". Without this it defaults to 0
+    // and would sort first in the root menu.
+    sd.sortOrder = 65;
+
+    auto& root = sd.submenu;
+    root.reserve(9);
+
+    addRow(root, [](MenuOption& files) {
         files.label = "Dateien";
         files.type = MenuConfig::Files;
         files.key = "sd_files";
-        sd.submenu.push_back(files);
+    });
 
-        sd.submenu.push_back(info);
+    // Each row's valueProvider() runs every frame, so none queries the card directly: they read
+    // _sdInfoCache, (re)populated at most once per open so the expensive getSDCardUsage() (walks the
+    // whole FAT) runs ≤1× per open, not per frame. Unmounted → cache invalid, rows show SD_INFO_HINT.
+    addRow(root, [](MenuOption& info) {
+        info.label = "Info";
+        info.type = MenuConfig::Submenu;
+        info.key = "sd_info";
 
-        MenuOption qformat;
+        auto& sub = info.submenu;
+        sub.reserve(7);
+
+        addRow(sub, [](MenuOption& o) {
+            o.label = "Typ";
+            o.type = MenuConfig::Readonly;
+            o.key = "sd_info_type";
+            o.valueProvider = []() -> std::string {
+                sdCardModule._refreshSdInfoCache();
+                if (!sdCardModule._sdInfoCache.valid) return SD_INFO_HINT;
+                return sdCardModule._sdInfoCache.type;
+            };
+        });
+        addRow(sub, [](MenuOption& o) {
+            o.label = "Kapazitaet";
+            o.type = MenuConfig::Readonly;
+            o.key = "sd_info_cap";
+            o.valueProvider = []() -> std::string {
+                sdCardModule._refreshSdInfoCache();
+                if (!sdCardModule._sdInfoCache.valid) return SD_INFO_HINT;
+                return sdCardModule._sdInfoCache.capacity;
+            };
+        });
+        addRow(sub, [](MenuOption& o) {
+            o.label = "Frei";
+            o.type = MenuConfig::Readonly;
+            o.key = "sd_info_free";
+            o.valueProvider = []() -> std::string {
+                sdCardModule._refreshSdInfoCache();
+                if (!sdCardModule._sdInfoCache.valid) return SD_INFO_HINT;
+                return sdCardModule._sdInfoCache.freeSpace;
+            };
+        });
+        addRow(sub, [](MenuOption& o) {
+            o.label = "Belegt";
+            o.type = MenuConfig::Readonly;
+            o.key = "sd_info_used";
+            o.valueProvider = []() -> std::string {
+                sdCardModule._refreshSdInfoCache();
+                if (!sdCardModule._sdInfoCache.valid) return SD_INFO_HINT;
+                return sdCardModule._sdInfoCache.usedSpace;
+            };
+        });
+        addRow(sub, [](MenuOption& o) {
+            o.label = "FS";
+            o.type = MenuConfig::Readonly;
+            o.key = "sd_info_fs";
+            o.valueProvider = []() -> std::string {
+                sdCardModule._refreshSdInfoCache();
+                if (!sdCardModule._sdInfoCache.valid) return SD_INFO_HINT;
+                return sdCardModule._sdInfoCache.fs;
+            };
+        });
+        addRow(sub, [](MenuOption& o) {
+            o.label = "Label";
+            o.type = MenuConfig::Readonly;
+            o.key = "sd_info_label";
+            o.valueProvider = []() -> std::string {
+                sdCardModule._refreshSdInfoCache();
+                if (!sdCardModule._sdInfoCache.valid) return SD_INFO_HINT;
+                // Empty volume label → dash so the row never renders blank.
+                return sdCardModule._sdInfoCache.label.empty() ? std::string(SD_INFO_HINT)
+                                                               : sdCardModule._sdInfoCache.label;
+            };
+        });
+        addRow(sub, [](MenuOption& o) {
+            o.label = "< Zurueck";
+            o.type = MenuConfig::Back;
+        });
+    });
+
+    // SD-Name: edit the volume label in place (char-scroll OSD editor). The item owns everything:
+    // valueProvider reads the live label, onValueChanged relabels the card (charset-checked in the
+    // API) and invalidates the info cache so the "Label" row refreshes.
+    addRow(root, [](MenuOption& sdName) {
+        sdName.label = "SD-Name";
+        sdName.type = MenuConfig::TextInput;
+        sdName.key = "sd_name";
+        sdName.valueProvider = []() -> std::string { return std::string(sdCardModule.getVolumeLabel().c_str()); };
+        sdName.onValueChanged = [](const MenuConfig::MenuOption&, const MenuValue& val) {
+            sdCardModule.setVolumeLabel(val.getString().c_str());
+            sdCardModule._sdInfoCache.valid = false; // force the Info "Label" row to re-read
+        };
+    });
+
+    addRow(root, [](MenuOption& qformat) {
         qformat.label = "Quick-Format";
         qformat.type = MenuConfig::Toast;
         qformat.key = "sd_qformat";
-        qformat.toast = "Quick-Format …";
-        sd.submenu.push_back(qformat);
+        qformat.toast = "Quick-Format ...";
+        qformat.confirmText = "MBR wird geloescht! Danach neu formatieren.";
+    });
 
-        MenuOption format;
+    addRow(root, [](MenuOption& format) {
         format.label = "Formatieren (exFAT)";
         format.type = MenuConfig::Toast;
         format.key = "sd_format";
-        format.toast = "Formatieren …";
-        sd.submenu.push_back(format);
+        format.toast = "Formatieren ...";
+        // exFAT is the only format that BLOCKS (~4s, single SdFat call) -> warn that the device is
+        // briefly not ready. Quick/Low-Level run non-blocking in the background (no such hint needed).
+        format.confirmText = "ALLE Daten weg! Geraet ca. 4s nicht bereit.";
+    });
 
-        MenuOption llf;
+    addRow(root, [](MenuOption& llf) {
         llf.label = "Low-Level-Format";
         llf.type = MenuConfig::Toast;
         llf.key = "sd_llf";
-        llf.toast = "Low-Level-Format …";
-        sd.submenu.push_back(llf);
+        llf.toast = "Low-Level-Format ...";
+        llf.confirmText = "Nullt die GANZE Karte! Dauert lange.";
+    });
 
-        MenuOption rpi;
+    // Partition-Info: a lazy submenu of read-only lines built on entry from the live MBR/GPT
+    // table, so it renders ON the display (not just the console). Console stays via `sdc rpi`.
+    addRow(root, [](MenuOption& rpi) {
         rpi.label = "Partition-Info (GPT/MBR)";
-        rpi.type = MenuConfig::Toast;
+        rpi.type = MenuConfig::Submenu;
         rpi.key = "sd_rpi";
-        rpi.toast = "Partitionen gelesen";
-        sd.submenu.push_back(rpi);
+        rpi.submenuBuilder = []() -> std::vector<MenuConfig::MenuOption> {
+            std::vector<std::string> lines;
+            sdCardModule.readPartitionInfoLines(lines);
+            std::vector<MenuConfig::MenuOption> items;
+            items.reserve(lines.size() + 1);
+            for (const std::string& l : lines)
+                MenuBuild::addRow(items, [&l](MenuConfig::MenuOption& row) {
+                    row.label = l;
+                    row.type = MenuConfig::Readonly;
+                });
+            MenuBuild::addRow(items, [](MenuConfig::MenuOption& back) {
+                back.label = "< Zurueck";
+                back.type = MenuConfig::Back;
+            });
+            return items;
+        };
+    });
 
-        MenuOption eject;
+    addRow(root, [](MenuOption& eject) {
         eject.label = "Sicher auswerfen";
         eject.type = MenuConfig::Toast;
         eject.key = "sd_eject";
         eject.toast = "Ausgeworfen";
-        sd.submenu.push_back(eject);
+    });
 
-        MenuOption back;
+    addRow(root, [](MenuOption& back) {
         back.label = "< Zurueck";
         back.type = MenuConfig::Back;
-        sd.submenu.push_back(back);
-    }
-
-    // Sit after Home-Tasten (60), before the pinned-last "Ueber". Without this it defaults to 0
-    // and would sort first in the root menu.
-    sd.sortOrder = 65;
+    });
 
     return sd;
 }
@@ -182,14 +213,16 @@ void SDCardModule::registerSdMenu()
 {
     openknxDisplayModule.tryRegisterRootItem(buildSdMenu());
 
-    // Destructive format actions — hold-confirm gated stubs; never blocking here.
-    openknxDisplayModule.tryRegisterAction("sd_qformat", []() { sdCardModule._requestSdFormatConfirm(SdFormatOp::Quick); });
-    openknxDisplayModule.tryRegisterAction("sd_format", []() { sdCardModule._requestSdFormatConfirm(SdFormatOp::ExFat); });
-    openknxDisplayModule.tryRegisterAction("sd_llf", []() { sdCardModule._requestSdFormatConfirm(SdFormatOp::LowLevel); });
+    // Destructive format actions — the menu gates these behind a Nein/Ja confirm (the items carry
+    // confirmText), so the action fires only on Ja. requestFormat() is NON-blocking: it unmounts and
+    // hands the work to the loop-driven state machine (Low-Level is spread over many ticks).
+    openknxDisplayModule.tryRegisterAction("sd_qformat", []() { sdCardModule.requestFormat(0); });
+    openknxDisplayModule.tryRegisterAction("sd_format", []() { sdCardModule.requestFormat(1); });
+    openknxDisplayModule.tryRegisterAction("sd_llf", []() { sdCardModule.requestFormat(2); });
 
     // Thin wrappers → member handlers (so logInfoP resolves logPrefix() via this).
+    // sd_rpi has no action: it is a submenu whose builder reads the table into read-only rows.
     openknxDisplayModule.tryRegisterAction("sd_info", []() { sdCardModule._menuActionSdInfo(); });
-    openknxDisplayModule.tryRegisterAction("sd_rpi", []() { sdCardModule._menuActionPartitionInfo(); });
     openknxDisplayModule.tryRegisterAction("sd_eject", []() { sdCardModule._menuActionSafeEject(); });
 
     // "Dateien" — activate the WidgetFileBrowser. The sd_files item is type Files, so MenuWidget
@@ -216,19 +249,6 @@ void SDCardModule::_menuActionSdInfo()
         return;
     }
     _refreshSdInfoCache(true); // one fresh (expensive) usage query on open
-}
-
-/**
- * @brief "Partition-Info" action — guard card presence, then read the partition table.
- */
-void SDCardModule::_menuActionPartitionInfo()
-{
-    if (!isCardInserted())
-    {
-        logInfoP("Partition-Info: no card inserted");
-        return;
-    }
-    readPartitionInfo();
 }
 
 /**
@@ -418,38 +438,6 @@ void SDCardModule::_refreshSdInfoCache(bool force)
     _sdInfoCache.valid = true;
 }
 
-/**
- * @brief Hold-to-confirm gate for the destructive SD format operations.
- *
- * Must not format without an explicit hold-to-confirm gesture, and must not block loop() with a
- * synchronous format. This stub therefore only guards card-present / mounted state (hint + return on
- * failure) and logs the intended confirm prompt. It does NOT call
- * quickFormat()/format()/lowLevelFormat() (those block; wiring them here would both bypass
- * confirmation and stall the watchdog).
- *
- * TODO: once the DeviceDisplay facade exposes the GestureEngine hold-confirm entry point (e.g.
- * openknxDisplayModule.requestHoldConfirm(title, onConfirmed)), replace the log below with that call,
- * and have onConfirmed start the NON-BLOCKING format state machine — never the blocking method.
- * Releasing the key before the countdown completes must abort with no destructive effect.
- */
-void SDCardModule::_requestSdFormatConfirm(SdFormatOp op)
-{
-    if (!isCardInserted())
-    {
-        logInfoP("Format: no card inserted");
-        return;
-    }
-    // A format can proceed from an unmounted-but-present card (the format path remounts as
-    // needed); we only refuse when there is physically no card. Mounted state is informational.
-
-    const char *opName = (op == SdFormatOp::Quick)      ? "Quick-Format"
-                         : (op == SdFormatOp::ExFat)    ? "Formatieren (exFAT)"
-                         : (op == SdFormatOp::LowLevel) ? "Low-Level-Format"
-                                                        : "Format";
-
-    // Gate only — do NOT execute. Full hold-confirm + non-blocking run comes later.
-    logInfoP("%s requested — hold-to-confirm required; not executed", opName);
-}
     #endif
 
 #endif // OPENKNX_SD_CARD_MODULE_ENABLE

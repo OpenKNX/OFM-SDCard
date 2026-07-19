@@ -117,6 +117,33 @@ void WidgetSDCard::drawSDInfo()
 
     _display->display->drawLine(0, 10, SCREEN_WIDTH, 10, WHITE);
 
+    // A running format takes over the whole widget body. Redrawn 1x/s by loop() while the widget is
+    // shown, so the percent updates live. Percent advances only for Low-Level (Quick/exFAT complete
+    // in a single tick and are practically never caught mid-format). The console logs in parallel.
+    if (sdCardModule.isFormatting())
+    {
+        _display->display->setTextWrap(false);
+        String l1 = String("FORMATIERE ") + sdCardModule.formatOpName();
+        _display->display->setCursor(CENTER_X - (l1.length() * 3), 24);
+        _display->display->print(l1.c_str());
+
+        // Fine percent (0.01 % resolution) so the number visibly moves even on a huge card.
+        const uint16_t pm = sdCardModule.formatPermyriad(); // 0..10000 = 0.00..100.00 %
+        const unsigned whole = pm / 100, frac = pm % 100;
+        String l2 = String(whole) + "." + (frac < 10 ? "0" : "") + String(frac) + "%";
+        _display->display->setCursor(CENTER_X - (l2.length() * 3), 38);
+        _display->display->print(l2.c_str());
+
+        // Progress bar (fine: fills by hundredths of a percent).
+        const int16_t barX = 14, barW = SCREEN_WIDTH - 28;
+        _display->display->drawRect(barX, 52, barW, 8, WHITE);
+        if (pm > 0)
+            _display->display->fillRect(barX, 52, (int16_t)((uint32_t)barW * pm / 10000), 8, WHITE);
+
+        _display->displayBuff();
+        return;
+    }
+
     if (sdCardModule.isCardInserted() && sdCardModule.isMounted() && sdCardModule.getCardInfo().isValid)
     {
         // Free/used come from the NON-BLOCKING incremental scan: SDCardModule advances the FAT /
@@ -192,7 +219,12 @@ void WidgetSDCard::drawSDInfo()
         String CardMessage2 = "Please insert card.";
         if (sdCardModule.isCardInserted())
         {
-            if (sdCardModule.isMounted())
+            if (sdCardModule.isCardUnformatted())
+            {
+                CardMessage1 = "NICHT FORMATIERT";
+                CardMessage2 = "Bitte formatieren!";
+            }
+            else if (sdCardModule.isMounted())
             {
                 CardMessage1 = "SD-CARD INSERTED.";
                 CardMessage2 = "Mounted. Could not read info!";

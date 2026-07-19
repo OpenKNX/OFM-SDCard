@@ -11,7 +11,7 @@
  * @author      Erkan Çolak
  * @version     0.0.1
  * @date        2024-03-25
- * @copyright   Copyright (c) 2025, Érkan Çolak
+ * @copyright   Copyright (c) 2025, Erkan Çolak
  *
  */
 
@@ -30,8 +30,10 @@
     #endif
 
     #ifdef DEVICE_DISPLAY_MODULE
+        #include "Menu/MenuConfig.h"
         #include "Widgets/WidgetSDCard.h"
-    #endif
+class WidgetFileBrowser;
+    #endif // DEVICE_DISPLAY_MODULE
 
     #define SDFAT_ SdFat
 
@@ -73,16 +75,22 @@ struct FileInfo
     bool isDir;
 };
 
+struct SdDirEntry
+{
+    String name;
+    bool isDir = false;
+    uint64_t size = 0;
+};
 
 struct CardInfo
 {
-  String manufacturer;
-  String productName;
-  String revision;
-  String serialNumber;
-  String manufactureDate;
-  String oemApplicationID;
-  bool isValid = false;
+    String manufacturer;
+    String productName;
+    String revision;
+    String serialNumber;
+    String manufactureDate;
+    String oemApplicationID;
+    bool isValid = false;
 };
 
 struct BootSectorInfo
@@ -147,9 +155,10 @@ class SDCardModule : public OpenKNX::Module
     bool mkdir(const char *path);
     bool rmdir(const char *path);
     std::vector<String> getFileList(const char *path);
+    size_t listDir(const char *path, std::vector<SdDirEntry> &out, size_t maxEntries = 0);
 
     inline const std::string name() { return SDCardModule_Display_Name; }
-    inline const std::string version() { return SDCardModule_Display_Version; }
+    inline const std::string version() { return MODULE_SDCard_Version; } // from library.json via versions.h (not the hard-coded define)
     bool Unmount(bool force = false);
     bool Mount();
     void ReMount();
@@ -163,25 +172,114 @@ class SDCardModule : public OpenKNX::Module
 
     uint64_t getSDCardSize();
     bool getSDCardUsage(uint64_t &freeSpace, uint64_t &usedSpace);
+
+    void beginUsageScan();
+    bool tickUsageScan();
+    bool getCachedUsage(uint64_t &freeSpace, uint64_t &usedSpace, uint64_t &totalSpace) const;
+    inline bool isUsageScanRunning() const { return _usState == UsageScanState::ScanFat || _usState == UsageScanState::ScanBitmap; }
+
     bool readCardInfo(CardInfo &cardInfo);
     inline void resetCardInfo() { _cardInfo.isValid = false; }
     inline CardInfo getCardInfo() { return _cardInfo; }
     String getCardType(bool shortType = false);
     String getFsType();
     String getVolumeLabel();
+    bool setVolumeLabel(const char *name); // in-place relabel (exFAT root entry / FAT boot sector)
     String getPartitionType(uint8_t partitionType);
     const char *formatSize(uint64_t bytes);
+
+    // Non-blocking format: request an op (0=Quick MBR-wipe, 1=exFAT, 2=Low-Level zero-fill); the work
+    // runs incrementally from loop() (_serviceFormat), so it never stalls the loop / trips the watchdog.
+    void requestFormat(uint8_t op);
+    inline bool isFormatting() const { return _fmtOp != FmtOp::None; }
+    // Progress for the SD widget while a format runs. Percent is meaningful only for Low-Level
+    // (Quick/exFAT complete in a single tick); it returns 0 for those.
+    inline uint8_t formatPercent() const
+    {
+        return (_fmtOp == FmtOp::LowLevel && _fmtTotal) ? (uint8_t)((uint64_t)_fmtSector * 100 / _fmtTotal) : 0;
+    }
+    // Fine progress in HUNDREDTHS of a percent (0..10000 = 0.00..100.00 %) so the widget shows movement
+    // even though 1 % of a big card is millions of sectors.
+    inline uint16_t formatPermyriad() const
+    {
+        return (_fmtOp == FmtOp::LowLevel && _fmtTotal) ? (uint16_t)((uint64_t)_fmtSector * 10000 / _fmtTotal) : 0;
+    }
+    inline const char *formatOpName() const
+    {
+        switch (_fmtOp)
+        {
+            case FmtOp::Quick: return "Quick-Format";
+            case FmtOp::ExFat: return "Formatieren";
+            case FmtOp::LowLevel: return "Low-Level";
+            default: return "";
+        }
+    }
+    // True when a card is inserted but carries NO usable filesystem (after Quick/Low-Level, or a
+    // failed volume mount) -> the SD widget prompts the user to run a Format.
+    inline bool isCardUnformatted() const { return _cardUnformatted; }
 
   private:
     void _mount(); // No direct call, only for internal use
     bool _inMountingProcess();
     bool _inUnmountingProcess();
-    void lowLevelFormat();
-    void quickFormat();
     void readPartitionInfo();
+    // Compact one-line-per-row MBR/GPT info for on-display rendering (Partition-Info submenu).
+    // Bounded (capped partition count) so it never runs away on a corrupt table.
+    void readPartitionInfoLines(std::vector<std::string> &out);
+
+    // Non-blocking format state machine (driven from loop() via _serviceFormat).
+    enum class FmtOp : uint8_t
+    {
+        None,
+        Quick,
+        ExFat,
+        LowLevel
+    };
+    FmtOp _fmtOp = FmtOp::None;
+    uint32_t _fmtSector = 0;                             // Low-Level progress cursor
+    uint32_t _fmtTotal = 0;                              // Low-Level total sector count
+    uint32_t _fmtHeartbeat = 0;                          // last Low-Level heartbeat-log timestamp
+    bool _cardUnformatted = false;                       // card present but no usable filesystem (needs Format)
+    static constexpr uint32_t FMT_SECTORS_PER_WRITE = 8; // Low-Level multi-block chunk (4 KB per write)
+    static constexpr uint32_t FMT_TICK_BUDGET_MS = 8;    // cap each Low-Level tick (~8 ms -> loop < 50 ms, no warning)
+    static constexpr uint32_t FMT_HEARTBEAT_MS = 5000;   // Low-Level: log a progress heartbeat every 5 s
+    void _serviceFormat();                               // perform one incremental step of _fmtOp
+    void _closeCardAfterFormat();                        // park the card (end _sd + SPI) after Quick/Low-Level
+    void _formatToast(const char *msg);                  // brief on-screen message (no-op without a display)
 
     time_t fatDateTimeToUnix(uint16_t fatDate, uint16_t fatTime);
     BootSectorInfo getBootSectorInfo(int fsType);
+
+    #ifdef DEVICE_DISPLAY_MODULE
+    MenuConfig::MenuOption buildSdMenu();
+    void registerSdMenu();
+    struct SdInfoCache
+    {
+        bool valid = false;
+        uint32_t refreshedAt = 0;
+        uint32_t mountGeneration = 0;
+        std::string type;
+        std::string fs;
+        std::string label;
+        std::string capacity;
+        std::string freeSpace;
+        std::string usedSpace;
+    };
+    void _refreshSdInfoCache(bool force = false);
+    static constexpr const char *SD_INFO_HINT = "-";
+    static constexpr uint32_t SD_INFO_CACHE_MIN_INTERVAL_MS = 2000;
+    SdInfoCache _sdInfoCache;
+
+    void _menuActionSdInfo();
+    void _menuActionSafeEject();
+    void _menuActionFileBrowser();
+    void _serviceFileBrowser();
+    void _hideFileBrowser();
+
+    WidgetFileBrowser *_fileBrowser = nullptr;
+    bool _fileBrowserOpen = false;
+    bool _fileBrowserActivated = false;
+    #endif // DEVICE_DISPLAY_MODULE
 
     MountStep _mountStep = MOUNT_STEP_INIT; // Default mount step - Initialize SPI
     uint32_t _cardDetectTimer = 0;          // Timer for card detection
@@ -193,8 +291,34 @@ class SDCardModule : public OpenKNX::Module
     CardInfo _cardInfo = {"", "", "", "", "", "", false};
     SDFAT_ _sd;
     uint8_t _chipSelectPin;
+    uint32_t _sdInfoGeneration = 0;
+
+    enum class UsageScanState : uint8_t
+    {
+        Idle, // Scan not started
+        ScanFat, // Scan the FAT to count free clusters
+        ScanBitmap,  // Scan the bitmap to count free clusters (exFAT only)
+        Done // Scan completed, results are cached
+    };
+    UsageScanState _usState = UsageScanState::Idle;
+    uint32_t _usSector = 0;
+    uint32_t _usEndSector = 0;
+    uint32_t _usCluster = 0;
+    uint32_t _usTotalClusters = 0;
+    uint32_t _usFreeClusters = 0;
+    uint32_t _usClusterSizeBytes = 0;
+    uint8_t _usEntryWidth = 0;
+    uint64_t _usResFree = 0, _usResUsed = 0, _usResTotal = 0;
+    bool _usResValid = false;
+    uint8_t _usSectorBuf[512];
+    uint32_t _usScanStartMs = 0;
+    uint32_t _usWorstTickUs = 0;
 };
 
 extern SDCardModule sdCardModule;
+
+    #ifdef DEVICE_DISPLAY_MODULE
+        #include "Widgets/WidgetFileBrowser.h"
+    #endif
 
 #endif // OPENKNX_SD_CARD_MODULE_ENABLE

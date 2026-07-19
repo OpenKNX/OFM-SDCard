@@ -1,11 +1,11 @@
 #ifdef DEVICE_DISPLAY_MODULE
 
-#pragma once
-#include "Widget.h"
-#include "SDCardModule.h"
-#ifdef DEVICE_DISPLAY_MODULE
-#include "DeviceDisplay.h"
-#endif
+    #pragma once
+    #include "SDCardModule.h"
+    #include "Widget.h"
+    #ifdef DEVICE_DISPLAY_MODULE
+        #include "DeviceDisplay.h"
+    #endif
 
 class WidgetSDCard : public Widget
 {
@@ -41,6 +41,16 @@ class WidgetSDCard : public Widget
     WidgetFlags _action;
     i2cDisplay *_display;
     std::string _name = "SD-Card";
+    uint32_t _duration_timerStart = 0;
+
+    // Free/used come from SDCardModule's NON-BLOCKING incremental scan. This widget only (re)triggers
+    // a scan (beginUsageScan) on mount and every SDINFO_USAGE_REFRESH_MS, and reads the last finished
+    // result (getCachedUsage). Triggering costs nothing (the scan spreads over loop()), so refreshing
+    // often no longer causes a loop spike.
+    static constexpr uint32_t SDINFO_USAGE_REFRESH_MS = 30000;
+    uint32_t _lastUsageQuery = 0; // last time a scan was (re)triggered; 0 = trigger on next draw (mount)
+    bool _cachedUsageValid = false;
+    uint64_t _cachedTotal = 0, _cachedUsed = 0, _cachedFree = 0;
 
     void drawSDInfo();
 };

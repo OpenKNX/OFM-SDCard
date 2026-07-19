@@ -24,6 +24,7 @@ void WidgetSDCard::start()
 
     logDebugP("Starting...");
     _state = WidgetState::RUNNING;
+    _duration_timerStart = millis();
 }
 
 void WidgetSDCard::stop()
@@ -103,23 +104,67 @@ void WidgetSDCard::drawSDInfo()
     _display->display->setCursor((SCREEN_WIDTH - (getName().length() * 6)) / 2, 0);
     _display->display->print(getName().c_str());
 
-    static uint32_t timerStart = millis();
-    uint32_t elapsedMillis = millis() - timerStart;
-    uint32_t remainingSeconds = (_displayTime > elapsedMillis) ? (_displayTime - elapsedMillis) / 1000 : 0;
-    if (remainingSeconds == 0)
+    uint32_t elapsedMillis = millis() - _duration_timerStart;
+    uint32_t remainingMillis = (_displayTime > elapsedMillis) ? (_displayTime - elapsedMillis) : 0;
+    if (remainingMillis == 0)
     {
-        timerStart = millis();
-        remainingSeconds = _displayTime / 1000; // Reset to initial time in seconds
+        _duration_timerStart = millis();
+        remainingMillis = _displayTime; // Reset to initial time
     }
+    uint16_t circlePosition = (SCREEN_WIDTH * elapsedMillis) / _displayTime;
+    _display->display->fillCircle(circlePosition, 10, 2, WHITE);
+    _display->display->drawCircle(circlePosition, 10, 2, BLACK);
+
     _display->display->drawLine(0, 10, SCREEN_WIDTH, 10, WHITE);
-    String timerText = String(remainingSeconds) + "s";
-    _display->display->setCursor(SCREEN_WIDTH - (timerText.length() * 6), 0);
-    _display->display->print(timerText);
+
+    // A running format takes over the whole widget body. Redrawn 1x/s by loop() while the widget is
+    // shown, so the percent updates live. Percent advances only for Low-Level (Quick/exFAT complete
+    // in a single tick and are practically never caught mid-format). The console logs in parallel.
+    if (sdCardModule.isFormatting())
+    {
+        _display->display->setTextWrap(false);
+        String l1 = String("FORMATIERE ") + sdCardModule.formatOpName();
+        _display->display->setCursor(CENTER_X - (l1.length() * 3), 24);
+        _display->display->print(l1.c_str());
+
+        // Fine percent (0.01 % resolution) so the number visibly moves even on a huge card.
+        const uint16_t pm = sdCardModule.formatPermyriad(); // 0..10000 = 0.00..100.00 %
+        const unsigned whole = pm / 100, frac = pm % 100;
+        String l2 = String(whole) + "." + (frac < 10 ? "0" : "") + String(frac) + "%";
+        _display->display->setCursor(CENTER_X - (l2.length() * 3), 38);
+        _display->display->print(l2.c_str());
+
+        // Progress bar (fine: fills by hundredths of a percent).
+        const int16_t barX = 14, barW = SCREEN_WIDTH - 28;
+        _display->display->drawRect(barX, 52, barW, 8, WHITE);
+        if (pm > 0)
+            _display->display->fillRect(barX, 52, (int16_t)((uint32_t)barW * pm / 10000), 8, WHITE);
+
+        _display->displayBuff();
+        return;
+    }
 
     if (sdCardModule.isCardInserted() && sdCardModule.isMounted() && sdCardModule.getCardInfo().isValid)
     {
-        uint64_t freeBytes = 0, usedBytes = 0, totalBytes = sdCardModule.getSDCardSize();
-        if (totalBytes > 0 && sdCardModule.getSDCardUsage(freeBytes, usedBytes))
+        // Free/used come from the NON-BLOCKING incremental scan: SDCardModule advances the FAT /
+        // exFAT-bitmap count a few sectors per loop() (never a single spike). We only (re)TRIGGER a
+        // scan here — on mount (_lastUsageQuery == 0) and then periodically — and read the last
+        // COMPLETED result via getCachedUsage(). Because triggering is free, refreshing often is now
+        // safe. The 1x/s countdown redraw just reuses whatever result is cached.
+        if (_lastUsageQuery == 0 || (uint32_t)(millis() - _lastUsageQuery) >= SDINFO_USAGE_REFRESH_MS)
+        {
+            _lastUsageQuery = millis();
+            sdCardModule.beginUsageScan(); // non-blocking; result lands over the next loops
+        }
+        {
+            uint64_t f = 0, u = 0, t = 0;
+            _cachedUsageValid = sdCardModule.getCachedUsage(f, u, t);
+            _cachedTotal = t;
+            _cachedFree = f;
+            _cachedUsed = u;
+        }
+        uint64_t freeBytes = _cachedFree, usedBytes = _cachedUsed, totalBytes = _cachedTotal;
+        if (_cachedUsageValid && totalBytes > 0)
         {
             float usedPercentage = (totalBytes > 0) ? ((float)usedBytes * 100.0f / totalBytes) : 0.0f;
 
@@ -168,12 +213,18 @@ void WidgetSDCard::drawSDInfo()
     }
     else
     {
+        _lastUsageQuery = 0; // invalidate cache -> re-query immediately on (re-)mount
 
         String CardMessage1 = "SD-CARD REMOVED.";
         String CardMessage2 = "Please insert card.";
         if (sdCardModule.isCardInserted())
         {
-            if (sdCardModule.isMounted())
+            if (sdCardModule.isCardUnformatted())
+            {
+                CardMessage1 = "NICHT FORMATIERT";
+                CardMessage2 = "Bitte formatieren!";
+            }
+            else if (sdCardModule.isMounted())
             {
                 CardMessage1 = "SD-CARD INSERTED.";
                 CardMessage2 = "Mounted. Could not read info!";

@@ -1,6 +1,9 @@
 #ifdef OPENKNX_SD_CARD_MODULE_ENABLE
 
     #include "SDCardModule.h"
+    #ifdef OPENKNX_FTC
+        #include "FileTransferClient.h" // self-register the SD storage backend with the FTC client
+    #endif
 
     #if !defined(SDCARD_SPI_INTERFACE) || \
         !defined(PIN_SDCARD_CS) ||        \
@@ -59,9 +62,69 @@ void SDCardModule::init()
  *
  * @param configured
  */
+// SdFat calls this on file create/modify to stamp the FAT/exFAT date+time. Pulls the current time
+// from the OpenKNX time source (KNX/NTP); falls back to a fixed date until the clock is valid.
+static void sdCardDateTimeCallback(uint16_t *date, uint16_t *time)
+{
+    if (openknx.time.isValid())
+    {
+        auto t = openknx.time.getLocalTime();
+        *date = FS_DATE(t.year, t.month, t.day);
+        *time = FS_TIME(t.hour, t.minute, t.second);
+    }
+    else
+    {
+        *date = FS_DATE(2026, 1, 1); // clock not set yet -> deterministic placeholder
+        *time = FS_TIME(0, 0, 0);
+    }
+}
+
+    #ifdef OPENKNX_FTC
+// --- FTC storage backend: SD ("sd/") ------------------------------------------------------------
+// Self-registered with the FTC client (see setup()), so the client needs no SD header. SD is SdFat
+// (FSFILE: fileSize()/curPosition()/seekSet()) -- its own handles + method names, NOT the client's fs::File.
+static FSFILE _ftcSdSrcFile;
+static FSFILE _ftcSdSinkFile;
+
+static int32_t sdOpen(const char *path)
+{
+    if (!sdCardModule.isMounted()) return -1;
+    _ftcSdSrcFile = sdCardModule.open(path, "r");
+    if (!_ftcSdSrcFile) return -1;
+    return (int32_t)_ftcSdSrcFile.fileSize();
+}
+static uint8_t sdRead(uint32_t offset, uint8_t *buf, uint8_t len)
+{
+    if (!_ftcSdSrcFile || buf == nullptr || len == 0) return 0;
+    if (_ftcSdSrcFile.curPosition() != offset && !_ftcSdSrcFile.seekSet(offset)) return 0;
+    const int r = _ftcSdSrcFile.read(buf, len);
+    return (r > 0) ? (uint8_t)r : 0;
+}
+static void sdClose() { _ftcSdSrcFile.close(); }
+
+static bool sdSinkOpen(const char *path)
+{
+    if (!sdCardModule.isMounted()) return false;
+    _ftcSdSinkFile = sdCardModule.open(path, "w"); // create / truncate
+    return (bool)_ftcSdSinkFile;
+}
+static int sdSinkWrite(const uint8_t *buf, uint16_t len)
+{
+    if (!_ftcSdSinkFile || buf == nullptr || len == 0) return -1;
+    return (int)_ftcSdSinkFile.write(buf, len);
+}
+static void sdSinkClose() { _ftcSdSinkFile.close(); }
+
+static bool sdAvailable() { return sdCardModule.isCardInserted() && sdCardModule.isMounted(); }
+// No cheap free-space API: getSDCardUsage() -> freeClusterCount() is O(FAT) (timed) and would stall the
+// transfer loop -> register nullptr (skip the pre-write gate; a full card is still caught per-chunk write).
+    #endif // OPENKNX_FTC
+
 void SDCardModule::setup(bool configured)
 {
     logDebugP("Setup...");
+    // Stamp firmware-created files with the real time (SdFat otherwise uses a fixed default date).
+    FsDateTime::setCallback(sdCardDateTimeCallback);
     _cardChanged = isCardInserted();
     if (_cardChanged) // Only initial on bootup!
     {
@@ -77,7 +140,19 @@ void SDCardModule::setup(bool configured)
 
     #ifdef DEVICE_DISPLAY_MODULE
     WidgetSDCard *sdCardWidget = new WidgetSDCard(30000, WidgetFlags::DefaultWidget); // Create a new SD Card widget
-    openknxDisplayModule.widgetManager.addWidget(sdCardWidget);                       // Add the widget to the widget manager queue.
+    openknxDisplayModule.tryAddWidget(sdCardWidget); // Add the widget to the widget manager queue (safe no-op if absent).
+
+    WidgetFileBrowser *fileBrowserWidget = new WidgetFileBrowser(
+        4500, static_cast<WidgetFlags>(WidgetFlags::ManagedExternally | WidgetFlags::Background | WidgetFlags::WantsButtonInput));
+    if (openknxDisplayModule.tryAddWidget(fileBrowserWidget)) // safe no-op (and delete) if absent.
+        _fileBrowser = fileBrowserWidget;
+    registerSdMenu();
+    #endif // DEVICE_DISPLAY_MODULE
+
+    #ifdef OPENKNX_FTC
+    // Self-register the SD backend with the FTC client ("sd/..." paths). freeBytes = nullptr (see note above).
+    openknxFileTransferClient.registerFileBackend("sd", {sdOpen, sdRead, sdClose},
+                                                  {sdSinkOpen, sdSinkWrite, sdSinkClose}, sdAvailable, nullptr);
     #endif
 }
 
@@ -88,7 +163,15 @@ void SDCardModule::setup(bool configured)
  */
 void SDCardModule::loop(bool configured)
 {
-    if (delayCheck(_cardDetectTimer, 500)) // CHeck every 500ms for card detection
+    // Drive the non-blocking format first. While a format runs the card is unmounted and being
+    // written sector-by-sector, so skip mount detection / browser / usage scan to avoid racing it
+    // (a mid-format remount or scan would fight the sector writes). A write error aborts the format
+    // (clears _fmtOp) and the next loop resumes normal handling.
+    _serviceFormat();
+    if (isFormatting())
+        return;
+
+    if (delayCheck(_cardDetectTimer, 500)) // Check every 500ms for card detection
     {
         _cardDetectTimer = millis();
         bool currentCardInserted = isCardInserted();
@@ -99,6 +182,12 @@ void SDCardModule::loop(bool configured)
         }
         _mount(); // State machine for card operations
     }
+
+    #ifdef DEVICE_DISPLAY_MODULE
+    _serviceFileBrowser();
+    #endif
+
+    tickUsageScan(); // Non-blocking incremental free-cluster scan (if running)
 }
 
 /**
@@ -136,6 +225,7 @@ bool SDCardModule::processCommand(const std::string command, bool diagnose)
             openknx.console.printHelpLine("sdc add /<f>", "Add a folder/file to the SD-Card");
             openknx.console.printHelpLine("sdc rm /<f>", "Remove a file from the SD-Card");
             openknx.console.printHelpLine("sdc cat /<f>", "Read a file from the SD-Card");
+            openknx.console.printHelpLine("sdc setlabel <name>", "Set the SD-Card volume label (relabel in place)");
             openknx.console.printHelpLine("sdc echo /<file> <text>", "Append content to a file in the SD-Card");
             openknx.console.printHelpLine("sdc mv /<src> /<targt>", "Rename/ or Move a file or folder");
             openknx.console.printHelpLine("sdc cp /<src> /<targt>", "Copy a file in the SD-Card");
@@ -152,8 +242,10 @@ bool SDCardModule::processCommand(const std::string command, bool diagnose)
             openknx.logger.color(0);
             openknx.logger.end();
         }
-        else if (command.compare(4, 4, "info") == 0)
+        else if (command.compare(4, 1, "i") == 0 &&
+                 (command.length() == 5 || command.compare(4, 4, "info") == 0))
         {
+            // "sdc i" and "sdc info" both show the card information.
             info();
         }
         else if (command.compare(4, 6, "format") == 0)
@@ -167,7 +259,7 @@ bool SDCardModule::processCommand(const std::string command, bool diagnose)
             if (answer.compare(" yes") == 0)
             {
                 logInfoP("Ok! You know the consequences. Formatting the SD card...");
-                format();
+                requestFormat(1); // non-blocking (runs from loop)
             }
             else
             {
@@ -186,7 +278,7 @@ bool SDCardModule::processCommand(const std::string command, bool diagnose)
             if (answer.compare(" yes") == 0)
             {
                 logInfoP("Ok! You know the consequences. Low-Level Formatting the SD card...");
-                lowLevelFormat();
+                requestFormat(2); // non-blocking (runs from loop)
             }
             else
             {
@@ -209,7 +301,7 @@ bool SDCardModule::processCommand(const std::string command, bool diagnose)
             if (answer.compare(" yes") == 0)
             {
                 logInfoP("Ok! You know the consequences. Quick Formatting the SD card...");
-                quickFormat();
+                requestFormat(0); // non-blocking (runs from loop)
             }
             else
             {
@@ -240,7 +332,7 @@ bool SDCardModule::processCommand(const std::string command, bool diagnose)
                 bRet = false;
             }
         }
-        else if (command.compare(4, 3, "ll ") == 0)
+        else if (command.compare(4, 2, "ll") == 0 && (command.length() == 6 || command[6] == ' '))
         {
             if (!isCardInserted() || !isMounted())
             {
@@ -248,7 +340,8 @@ bool SDCardModule::processCommand(const std::string command, bool diagnose)
                 return false;
             }
             logInfoP("SD-Card Files:");
-            String path = command.substr(7).c_str();
+            // "sdc ll", "sdc ll " and "sdc ll /" all list root; guard substr so bare "sdc ll" cannot throw.
+            String path = (command.length() > 7) ? String(command.substr(7).c_str()) : String("/");
             path = path.length() == 0 ? "/" : path;
             std::vector<String> files = getFileList(path.c_str());
             openknx.logger.begin();
@@ -366,18 +459,19 @@ bool SDCardModule::processCommand(const std::string command, bool diagnose)
             openknx.logger.color(0);
             openknx.logger.end();
         }
-        else if (command.compare(4, 3, "ls ") == 0)
+        else if (command.compare(4, 2, "ls") == 0 && (command.length() == 6 || command[6] == ' '))
         {
             if (!isCardInserted() || !isMounted())
             {
                 logErrorP("No SD card inserted or mounted!");
                 return false;
             }
-            String path = command.substr(7).c_str();
+            // "sdc ls", "sdc ls " and "sdc ls /" all list root; guard substr so bare "sdc ls" cannot throw.
+            String path = (command.length() > 7) ? String(command.substr(7).c_str()) : String("/");
             std::vector<String> files = getFileList(path.length() > 0 ? path.c_str() : "/");
             for (String file : files)
             {
-                logInfoP("%s", file.c_str());
+                openknx.logger.log(file.c_str());
             }
         }
         else if (command.compare(4, 6, "mkdir ") == 0)
@@ -453,10 +547,18 @@ bool SDCardModule::processCommand(const std::string command, bool diagnose)
                 logErrorP("No SD card inserted or mounted!");
                 return false;
             }
+            // "sdc cat /<file>": guard the length before substr() - a too-short command would make
+            // std::string::substr(9) throw, and an uncaught exception reboots the ESP.
+            if (command.length() <= 9)
+            {
+                logErrorP("Usage: sdc cat /<file>");
+                return false;
+            }
             logInfoP("Reading file and will show the first %d bytes of the file content.", OPENKNX_MAX_LOG_MESSAGE_LENGTH);
             String fileName = command.substr(9).c_str();
             uint8_t buffer[OPENKNX_MAX_LOG_MESSAGE_LENGTH];
             size_t bytesRead = read(fileName.c_str(), buffer, sizeof(buffer) - 1); // Reserve space for null terminator
+            if (bytesRead >= sizeof(buffer)) bytesRead = sizeof(buffer) - 1;       // defensive: never index past buffer
             if (bytesRead > 0)
             {
                 buffer[bytesRead] = '\0'; // Null-terminate the buffer for printing as a string in log message
@@ -472,6 +574,27 @@ bool SDCardModule::processCommand(const std::string command, bool diagnose)
                 logErrorP("Failed to read file");
                 return false;
             }
+        }
+        else if (command.compare(4, 9, "setlabel ") == 0)
+        {
+            if (!isCardInserted() || !isMounted())
+            {
+                logErrorP("No SD card inserted or mounted!");
+                return false;
+            }
+            if (command.length() <= 13) // "sdc setlabel " is 13 chars
+            {
+                logErrorP("Usage: sdc setlabel <name>");
+                return false;
+            }
+            std::string label = command.substr(13);
+            if (label.size() >= 2 && label.front() == '"' && label.back() == '"')
+                label = label.substr(1, label.size() - 2); // strip optional surrounding quotes
+            if (setVolumeLabel(label.c_str()))
+                logInfoP("Volume label set to \"%s\"", label.c_str());
+            else
+                logErrorP("Failed to set volume label");
+            return true;
         }
         else if (command.compare(4, 5, "echo ") == 0)
         {
@@ -680,6 +803,7 @@ void SDCardModule::_mount()
             {
                 logErrorP("Volume initialization failed! Please check file system format!");
                 logErrorP(" -- Supported formats: %s --", FS_SUPPORT_FORMATS);
+                _cardUnformatted = true; // card present but no usable FS -> "Bitte formatieren"
                 _mountStep = MOUNT_STEP_ERROR;
                 return;
             }
@@ -691,6 +815,8 @@ void SDCardModule::_mount()
         case MOUNT_STEP_MOUNT:
         {
             _mountStep = MOUNT_STATE_MOUNTED; // Reset the mount step
+            _cardUnformatted = false;         // a valid volume is mounted -> clear the "needs Format" hint
+            _sdInfoGeneration++; // Increment the generation counter to indicate that the SD-Card state has changed
             logInfoP("SD-Card successfully mounted!");
             resetCardInfo(); // Reset the card info to be sure we read the info again
             info();
@@ -754,6 +880,7 @@ bool SDCardModule::Unmount(bool force)
     SPI_SD.end();
     logDebugP("SPI for SD-Card closed!");
     _mountStep = MOUNT_STATE_UNMOUNTED; // Reset the mount step
+    _sdInfoGeneration++; // Increment the generation counter to indicate that the SD-Card state has changed
     return true;
 }
 
@@ -919,83 +1046,224 @@ bool SDCardModule::format()
     }
 }
 
-/**
- * @brief Quick format the SD card with deleting the MBR
- *
- */
-void SDCardModule::quickFormat()
+// Request a non-blocking format op (0=Quick MBR wipe, 1=exFAT, 2=Low-Level zero-fill). The work runs
+// incrementally from loop() (_serviceFormat), so the loop is never stalled / the watchdog stays fed.
+// Ignored while a format is already running.
+//
+// IMPORTANT: Unmount() ends _sd AND closes the SPI bus (SPI_SD.end()), so raw sector writes and
+// _sd.format() would fail ("MBR write error" / "no card"). We therefore fully unmount and then
+// RE-INITIALISE the card only (re-open SPI + cardBegin, WITHOUT mounting a volume), giving the format
+// a live card to work on.
+void SDCardModule::requestFormat(uint8_t op)
 {
+    if (_fmtOp != FmtOp::None)
+    {
+        logInfoP("Format: already running (%u%%)", _fmtTotal ? (unsigned)((uint64_t)_fmtSector * 100 / _fmtTotal) : 0);
+        return;
+    }
     if (!isCardInserted())
     {
         logErrorP("No SD card inserted!");
         return;
     }
-    if (!Unmount())
+
+    Unmount(true); // close the current volume + SPI (forced: a format proceeds regardless of busy)
+
+    // Re-open SPI + init the card WITHOUT a volume, so writeSector() / _sd.format() have a live card.
+    #ifdef ARDUINO_ARCH_RP2040
+    SPI_SD.begin(true);
+    #else
+    SPI_SD.begin(PIN_SDCARD_SCK, PIN_SDCARD_MISO, PIN_SDCARD_MOSI, PIN_SDCARD_CS);
+    #endif
+    if (!_sd.cardBegin(sdConfig))
     {
-        logErrorP("Unmounting the SD card failed! Aborting quick format.");
+        logErrorP("Format: card init failed! Aborting.");
+        _closeCardAfterFormat();
         return;
     }
-    logInfoP("Quick formatting the SD card...");
-    logInfoP("The quick formatting process may take a few time.");
-    logInfoP(" --- PLEASE WAIT --- ");
-    uint8_t emptyMBR[512] = {0};
-    if (!_sd.card()->writeSector(0, emptyMBR))
+
+    _fmtSector = 0;
+    _fmtTotal = (_sd.card() ? (uint32_t)_sd.card()->sectorCount() : 0); // valid now: card initialised
+    switch (op)
     {
-        logInfoP(" --- ERROR DURING QUICK FORMATTING --- ");
-        logInfoP("Error writing MBR sector!");
-        logInfoP("The SD card is not formatted!");
-        logInfoP("Please format the SD card manually!");
-        return;
+        case 0:
+            _fmtOp = FmtOp::Quick;
+            logInfoP("Quick-Format started (background)...");
+            break;
+        case 1:
+            _fmtOp = FmtOp::ExFat;
+            logInfoP("Format started (background)...");
+            _formatToast("Formatiere exFAT...");
+            break;
+        case 2:
+            _fmtOp = FmtOp::LowLevel;
+            _fmtHeartbeat = millis();
+            logInfoP("Low-Level-Format started (background, %lu sectors)...", (unsigned long)_fmtTotal);
+            _formatToast("Low-Level laeuft...");
+            break;
+        default:
+            logErrorP("Format: unknown op %u", op);
+            _closeCardAfterFormat();
+            break;
     }
-    logInfoP(" --- QUICK FORMATTING SUCCESSFUL --- ");
-    logInfoP("Quick formatting completed successfully!");
-    logInfoP("The MBR was deleted!");
-    logInfoP("You need to format the SD card. Use the 'format' command.");
 }
 
-/**
- * @brief Low-level format the SD card
- *        ATTENTION: This will erase all data on the SD card!
- */
-void SDCardModule::lowLevelFormat()
+// Park the card after a format (or on an init/error abort): end _sd, close SPI, mark unmounted.
+// Quick / Low-Level leave the card WITHOUT a filesystem, so this parks it cleanly (the user then runs
+// an exFAT Format to create one). exFAT success remounts via ReMount() instead of this.
+void SDCardModule::_closeCardAfterFormat()
 {
-    if (!isCardInserted())
-    {
-        logErrorP("No SD card inserted!");
-        return;
-    }
-    if (!Unmount())
-    {
-        logErrorP("Unmounting the SD card failed! Aborting low-level format.");
-        return;
-    }
-    logInfoP("Low-Level formatting the SD card...");
-    logInfoP("!! This will zero-fill the entire SD card !!");
-    logInfoP("!! The low-level formatting process take a few time. !! ");
-    logInfoP(" --- PLEASE WAIT --- ");
-    uint8_t emptySector[512] = {0}; // Leerer Sektor mit 0x00
+    _sd.end();
+    SPI_SD.end();
+    _mountStep = MOUNT_STATE_UNMOUNTED;
+    _cardUnformatted = true; // no filesystem left -> SD widget prompts "Bitte formatieren"
+    _sdInfoGeneration++;
+}
 
-    for (uint32_t i = 0; i < _sd.card()->sectorCount(); i++)
+// Brief on-screen message so a format gives display feedback (menu OR console trigger), mirroring
+// the console log. No-op when no DeviceDisplay is present.
+void SDCardModule::_formatToast(const char *msg)
+{
+    #ifdef DEVICE_DISPLAY_MODULE
+    openknxDisplayModule.showToast(msg);
+    #else
+    (void)msg;
+    #endif
+}
+
+// Perform ONE incremental step of the pending format op — called every loop(). Quick finishes in one
+// tick; exFAT is a single (unavoidably blocking ~seconds) SdFat call; Low-Level zeroes the card in
+// SHORT, TIME-BOUNDED bursts (multi-block writes capped at FMT_TICK_BUDGET_MS) so a loop() tick stays
+// short and the router keeps running smoothly (KNX / display unaffected — no loop-time warning).
+void SDCardModule::_serviceFormat()
+{
+    switch (_fmtOp)
     {
-        if (!_sd.card()->writeSector(i, emptySector))
+        case FmtOp::None:
+            return;
+
+        case FmtOp::Quick:
         {
-            logErrorP(" --- ERROR DURING LOW-LEVEL FORMATTING --- ");
-            logErrorP("Error writing sector: %lu", i);
-            logErrorP("Low-Level formatting failed!");
-            logErrorP("Please format the SD card manually!");
-            logErrorP("Supported formats: %s", FS_SUPPORT_FORMATS);
-            logErrorP("Low-Level formatting aborted!");
+            uint8_t emptyMBR[512] = {0};
+            const bool ok = _sd.card() && _sd.card()->writeSector(0, emptyMBR);
+            _fmtOp = FmtOp::None;
+            if (ok)
+            {
+                logInfoP("Quick-Format done (MBR cleared). Use 'format' next.");
+                _formatToast("Quick-Format fertig.\nBitte formatieren.");
+            }
+            else
+            {
+                logErrorP("Quick-Format FAILED (MBR write error).");
+                _formatToast("Quick-Format\nfehlgeschlagen!");
+            }
+            _closeCardAfterFormat(); // MBR gone -> no filesystem; park the card cleanly
             return;
         }
 
-        if (i % 100 == 0)
+        case FmtOp::ExFat:
         {
-            logInfoP("Low-Level formatting: %lu%%", i * 100 / _sd.card()->sectorCount());
+            // SdFat's format() is a single monolithic library call (cannot be chunked) -> it blocks
+            // for its whole duration (a few seconds). Bounded and one-shot, so it is accepted as-is;
+            // the loop-time warning it emits is honest (it really did block).
+            const bool ok = _sd.format();
+            _fmtOp = FmtOp::None;
+            if (!ok)
+            {
+                logErrorP("Format FAILED. Supported: %s", FS_SUPPORT_FORMATS);
+                _formatToast("Format\nfehlgeschlagen!");
+                _closeCardAfterFormat();
+                return;
+            }
+
+            logInfoP("Format done.");
+            // Mount the fresh exFAT DIRECTLY: the card is still initialised (from requestFormat's
+            // cardBegin), so a volumeBegin() picks up the new filesystem. Retry once with a fresh
+            // cardBegin in case the backend needs it post-format.
+            bool mounted = _sd.volumeBegin();
+            if (!mounted && _sd.cardBegin(sdConfig))
+                mounted = _sd.volumeBegin();
+
+            if (mounted)
+            {
+                _mountStep = MOUNT_STATE_MOUNTED;
+                _cardUnformatted = false;
+                _sdInfoGeneration++;
+                resetCardInfo();
+                logInfoP("SD-Card successfully mounted!");
+                _formatToast("Karte formatiert\n(exFAT).");
+                info();
+            }
+            else
+            {
+                logErrorP("Format done, but mounting the fresh volume failed.");
+                _formatToast("Formatiert,\nMount-Fehler");
+                _closeCardAfterFormat();
+            }
+            return;
+        }
+
+        case FmtOp::LowLevel:
+        {
+            if (_fmtTotal == 0 || !_sd.card())
+            {
+                logErrorP("Low-Level-Format: no card.");
+                _fmtOp = FmtOp::None;
+                _formatToast("Low-Level: keine Karte");
+                _closeCardAfterFormat();
+                return;
+            }
+
+    #ifdef DEVICE_DISPLAY_MODULE
+            // While a button is held (gesture/menu interaction), pause the wipe for this tick so the
+            // display is fully free and the gesture countdown overlay animates smoothly. Progress is
+            // preserved; writing resumes as soon as the button is released.
+            if (openknxDisplayModule.isGestureActive())
+                return;
+    #endif
+
+            // Zero the card in short, time-bounded bursts using MULTI-BLOCK writes (writeSectors is
+            // far faster than one-sector-at-a-time). We keep writing FMT_SECTORS_PER_WRITE-sector
+            // chunks only until FMT_TICK_BUDGET_MS elapsed, so a single tick stays ~15 ms regardless
+            // of card speed -> the router stays responsive.
+            static uint8_t zeroBuf[FMT_SECTORS_PER_WRITE * 512] = {0};
+            const uint32_t budgetStart = millis();
+            while (_fmtSector < _fmtTotal && (uint32_t)(millis() - budgetStart) < FMT_TICK_BUDGET_MS)
+            {
+                uint32_t chunk = FMT_SECTORS_PER_WRITE;
+                if (_fmtSector + chunk > _fmtTotal) chunk = _fmtTotal - _fmtSector;
+                if (!_sd.card()->writeSectors(_fmtSector, zeroBuf, chunk))
+                {
+                    logErrorP("Low-Level-Format: write error at sector %lu. Aborted.", (unsigned long)_fmtSector);
+                    _fmtOp = FmtOp::None;
+                    _formatToast("Low-Level\nfehlgeschlagen!");
+                    _closeCardAfterFormat();
+                    return;
+                }
+                _fmtSector += chunk;
+            }
+
+            // Heartbeat every few seconds with FINE progress (0.01 %) + sector counter, so it is
+            // obvious the wipe is alive — 1 % of a big card is millions of sectors and a plain
+            // integer % would sit on 0 for hours.
+            if ((uint32_t)(millis() - _fmtHeartbeat) >= FMT_HEARTBEAT_MS)
+            {
+                _fmtHeartbeat = millis();
+                const uint16_t pm = (uint16_t)((uint64_t)_fmtSector * 10000 / _fmtTotal);
+                logInfoP("Low-Level-Format: %u.%02u%% (%lu / %lu sectors)",
+                         (unsigned)(pm / 100), (unsigned)(pm % 100),
+                         (unsigned long)_fmtSector, (unsigned long)_fmtTotal);
+            }
+            if (_fmtSector >= _fmtTotal)
+            {
+                _fmtOp = FmtOp::None;
+                logInfoP("Low-Level-Format done. Use 'format' next.");
+                _formatToast("Low-Level fertig.\nBitte formatieren.");
+                _closeCardAfterFormat(); // whole card zeroed -> no filesystem; park cleanly
+            }
+            return;
         }
     }
-    logInfoP(" --- LOW-LEVEL FORMATTING SUCCESSFUL --- ");
-    logInfoP("Low-Level formatting completed successfully!");
-    logInfoP("You need to format the SD card. Use the 'format' command.");
 }
 
 /**
@@ -1039,6 +1307,13 @@ void SDCardModule::readPartitionInfo()
     if (!isCardInserted())
     {
         logErrorP("No SD card inserted!");
+        return;
+    }
+    // Card can be ended/unmounted (SPI closed) yet still inserted after a format -- _sd.card() is
+    // then null; guard before dereferencing it for the raw sector read.
+    if (!isMounted() || !_sd.card())
+    {
+        logErrorP("SD card not mounted!");
         return;
     }
 
@@ -1177,6 +1452,98 @@ void SDCardModule::readPartitionInfo()
     logErrorP("No valid partition table (GPT or MBR) found on SD card.");
 }
 
+// Compact MBR/GPT summary into one short line per row (<=21 chars for the 128px display). Bounded:
+// GPT entries are capped so a corrupt header can never spin the loop. Used by the Partition-Info
+// submenu (readPartitionInfo() keeps the full console dump).
+void SDCardModule::readPartitionInfoLines(std::vector<std::string> &out)
+{
+    out.clear();
+    if (!isCardInserted())
+    {
+        out.push_back("Keine Karte");
+        return;
+    }
+    // After a format the card is ended/unmounted (SPI closed) yet still physically inserted, so
+    // isCardInserted() passes while _sd.card() is null -- guard the deref below.
+    if (!isMounted() || !_sd.card())
+    {
+        out.push_back("Nicht gemountet");
+        return;
+    }
+
+    uint8_t buffer[512];
+    if (!_sd.card()->readSector(0, buffer))
+    {
+        out.push_back("Sektor 0 Fehler");
+        return;
+    }
+
+    const bool sig = (buffer[0x1FE] == 0x55 && buffer[0x1FF] == 0xAA);
+    const bool protectiveGpt = sig && (buffer[0x1BE + 4] == 0xEE);
+    char tmp[24];
+
+    // Plain MBR (not a GPT protective MBR): list the up to 4 non-empty primary entries.
+    if (sig && !protectiveGpt)
+    {
+        out.push_back("MBR");
+        uint32_t shown = 0;
+        for (int i = 0; i < 4; i++)
+        {
+            const int off = 0x1BE + i * 16;
+            const uint8_t type = buffer[off + 4];
+            const uint32_t start = buffer[off + 8] | (buffer[off + 9] << 8) |
+                                   (buffer[off + 10] << 16) | ((uint32_t)buffer[off + 11] << 24);
+            const uint32_t count = buffer[off + 12] | (buffer[off + 13] << 8) |
+                                   (buffer[off + 14] << 16) | ((uint32_t)buffer[off + 15] << 24);
+            if (type == 0 || count == 0) continue; // empty slot
+            shown++;
+            snprintf(tmp, sizeof(tmp), "P%d 0x%02X %s", i + 1, type, getPartitionType(type).c_str());
+            out.push_back(tmp);
+            snprintf(tmp, sizeof(tmp), " %lu-%lu", (unsigned long)start, (unsigned long)(start + count - 1));
+            out.push_back(tmp);
+        }
+        if (shown == 0) out.push_back("(keine Partition)");
+        return;
+    }
+
+    // GPT (protective MBR or an "EFI PART" signature in sector 0).
+    if (protectiveGpt || memcmp(buffer, "EFI PART", 8) == 0)
+    {
+        out.push_back("GPT");
+        if (!_sd.card()->readSector(1, buffer))
+        {
+            out.push_back("GPT-Header Fehler");
+            return;
+        }
+        uint32_t entryLBA;
+        memcpy(&entryLBA, &buffer[72], sizeof(entryLBA));
+        uint32_t pcount;
+        memcpy(&pcount, &buffer[80], sizeof(pcount));
+        if (pcount > 128) pcount = 128; // safety cap against a corrupt header
+
+        uint32_t shown = 0;
+        for (uint32_t i = 0; i < pcount; i++)
+        {
+            const uint32_t sector = entryLBA + (i * 128) / 512;
+            if (!_sd.card()->readSector(sector, buffer)) break;
+            const uint8_t *e = buffer + (i * 128) % 512;
+            uint64_t firstLBA, lastLBA;
+            memcpy(&firstLBA, &e[32], sizeof(firstLBA));
+            memcpy(&lastLBA, &e[40], sizeof(lastLBA));
+            if (firstLBA == 0 && lastLBA == 0) continue; // unused entry
+            shown++;
+            snprintf(tmp, sizeof(tmp), "P%lu %llu-%llu", (unsigned long)shown,
+                     (unsigned long long)firstLBA, (unsigned long long)lastLBA);
+            out.push_back(tmp);
+            if (shown >= 8) break; // display cap
+        }
+        if (shown == 0) out.push_back("(keine Partition)");
+        return;
+    }
+
+    out.push_back("Keine Part.-Tabelle");
+}
+
 /**
  * @brief Show the SD card information on the console
  * Console output: Displays the SD card information such as manufacturer, product
@@ -1237,6 +1604,7 @@ bool SDCardModule::info()
 
     openknx.logger.logWithValues("| Card Type              | %-50s |", getCardType().c_str());
     openknx.logger.logWithValues("| File System            | %-50s |", getFsType().c_str());
+    openknx.logger.logWithValues("| Volume Label           | %-50s |", getVolumeLabel().c_str());
 
     uint64_t freeBytes = 0, usedBytes = 0, totalBytes = getSDCardSize();
     if (totalBytes > 0 && getSDCardUsage(freeBytes, usedBytes))
@@ -1389,12 +1757,13 @@ bool SDCardModule::exists(const char *path)
  */
 size_t SDCardModule::read(const char *path, uint8_t *buffer, size_t size)
 {
-    if (!isMounted()) return 0;
+    if (!isMounted() || buffer == nullptr || size == 0) return 0;
     FSFILE file = open(path, "r");
     if (!file) return 0;
-    size_t bytesRead = file.read(buffer, size);
+    const int bytesRead = file.read(buffer, size); // int: -1 on error
     file.close();
-    return bytesRead;
+    // Never leak a -1 into size_t (would become SIZE_MAX and overflow callers, e.g. buffer[bytesRead]).
+    return (bytesRead > 0) ? static_cast<size_t>(bytesRead) : 0;
 }
 
 /**
@@ -1481,6 +1850,52 @@ std::vector<String> SDCardModule::getFileList(const char *path)
     }
     dir.close();
     return fileList;
+}
+
+/**
+ * @brief Single-pass directory listing for the device-display file browser.
+ *
+ * Collects name, directory flag and size for every child of @p path in ONE
+ * openNextFile() loop, reusing the already-open FSFILE for isDirectory()/size()
+ * instead of re-opening each entry (as Statistics() would). The public signature
+ * exposes only SdDirEntry, keeping it free of any SdFat/FSFILE type.
+ *
+ * Nothing is listed unless the card isMounted(); in that case @p out is left
+ * untouched (i.e. empty when the caller passes an empty vector). @p maxEntries
+ * bounds the number of appended entries to limit RAM use and loop time; a value
+ * of 0 means "no cap".
+ *
+ * @param path        The directory to list.
+ * @param out         Vector the entries are appended to (not cleared here).
+ * @param maxEntries  Maximum entries to append (0 = unlimited).
+ * @return The number of entries appended to @p out.
+ */
+size_t SDCardModule::listDir(const char *path, std::vector<SdDirEntry> &out, size_t maxEntries)
+{
+    if (!isMounted()) return 0;
+    FSFILE dir = _sd.open(path);
+    if (!dir) return 0;
+
+    size_t count = 0;
+    char buffer[256];
+    while (FSFILE file = dir.openNextFile())
+    {
+        if (maxEntries != 0 && count >= maxEntries)
+        {
+            file.close();
+            break;
+        }
+        SdDirEntry entry;
+        file.getName(buffer, sizeof(buffer));
+        entry.name = buffer;
+        entry.isDir = file.isDirectory();
+        entry.size = entry.isDir ? 0 : (uint64_t)file.size();
+        file.close();
+        out.push_back(entry);
+        count++;
+    }
+    dir.close();
+    return count;
 }
 
 /**
@@ -1599,6 +2014,167 @@ bool SDCardModule::getSDCardUsage(uint64_t &freeSpace, uint64_t &usedSpace)
 }
 
 /**
+ * @brief  Start an incremental scan of the SD card's usage (free/used clusters).
+ * 
+ * This function initiates a scan of the SD card's file system to determine the number of free and used clusters.
+ * It supports FAT16, FAT32, and exFAT file systems. The scan is performed incrementally to avoid
+ * blocking the main loop, and it can be ticked in the main loop
+ */
+void SDCardModule::beginUsageScan()
+{
+    if (isUsageScanRunning()) return; // one pass at a time
+    if (!isMounted()) return;
+
+    FSVOlUME *vol = _sd.vol();
+    if (!vol) return;
+
+    const uint8_t ft = _sd.fatType();
+    _usClusterSizeBytes = vol->bytesPerCluster();
+    _usTotalClusters = vol->clusterCount();
+    _usFreeClusters = 0;
+    _usCluster = 0;
+    if (_usTotalClusters == 0 || _usClusterSizeBytes == 0) return;
+
+    if (ft == FAT_TYPE_FAT32 || ft == FAT_TYPE_FAT16)
+    {
+        _usEntryWidth = (ft == FAT_TYPE_FAT32) ? 4 : 2;
+        const uint32_t fatStart = vol->fatStartSector();
+        const uint32_t entries = _usTotalClusters + 2; // FAT covers clusters 0..(total+1)
+        const uint32_t fatSectors = ((entries * _usEntryWidth) + 511u) / 512u;
+        _usSector = fatStart;
+        _usEndSector = fatStart + fatSectors;
+        _usState = UsageScanState::ScanFat;
+    }
+    else if (ft == FAT_TYPE_EXFAT)
+    {
+        // exFAT allocation bitmap: 1 bit per cluster (0 = free), bit i => cluster (i+2). Standard
+        // layout places the bitmap on cluster 2, i.e. starting at dataStartSector().
+        const uint32_t bmpStart = vol->dataStartSector();
+        const uint32_t bmpSectors = (((_usTotalClusters + 7u) / 8u) + 511u) / 512u;
+        _usSector = bmpStart;
+        _usEndSector = bmpStart + bmpSectors;
+        _usState = UsageScanState::ScanBitmap;
+    }
+    else
+    {
+        _usState = UsageScanState::Idle; // FAT12 / unknown -> not supported by the incremental path
+        return;
+    }
+    _usScanStartMs = millis();
+    _usWorstTickUs = 0;
+    logDebugP("Usage scan START (fatType=%u, clusters=%lu, sectors=%lu)", ft,
+              (unsigned long)_usTotalClusters, (unsigned long)(_usEndSector - _usSector));
+}
+
+/**
+ * @brief  Advance the incremental scan of the SD card's usage by a bounded number of sectors.
+ * 
+ * This function should be called repeatedly in the main loop to continue the scan. It processes
+ * a limited number of sectors per call to avoid blocking the main loop. Returns true while a scan
+ * is still running.
+ */
+bool SDCardModule::tickUsageScan()
+{
+    if (_usState != UsageScanState::ScanFat && _usState != UsageScanState::ScanBitmap)
+        return false;
+
+    auto *card = _sd.card();
+    if (!card)
+    {
+        _usState = UsageScanState::Idle;
+        return false;
+    }
+
+    const uint32_t tickStartUs = micros();  // diagnostics: measure this tick's duration
+    constexpr uint8_t SECTORS_PER_TICK = 8; // ~4 KB/loop -> a few ms, keeps the loop responsive
+    for (uint8_t n = 0; n < SECTORS_PER_TICK && _usSector < _usEndSector; ++n)
+    {
+        if (!card->readSector(_usSector, _usSectorBuf))
+        {
+            _usState = UsageScanState::Idle; // read error -> abort, keep the last valid result
+            return false;
+        }
+        _usSector++;
+
+        if (_usState == UsageScanState::ScanFat)
+        {
+            const uint16_t perSector = (uint16_t)(512u / _usEntryWidth);
+            for (uint16_t i = 0; i < perSector; ++i)
+            {
+                const uint32_t cl = _usCluster++;
+                if (cl >= _usTotalClusters + 2) break;
+                if (cl < 2) continue; // clusters 0,1 are reserved, never "free"
+                uint32_t entry;
+                if (_usEntryWidth == 4)
+                {
+                    const uint8_t *p = &_usSectorBuf[i * 4];
+                    entry = ((uint32_t)p[0]) | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+                    entry &= 0x0FFFFFFFu;
+                }
+                else
+                {
+                    const uint8_t *p = &_usSectorBuf[i * 2];
+                    entry = ((uint16_t)p[0]) | ((uint16_t)p[1] << 8);
+                }
+                if (entry == 0) _usFreeClusters++;
+            }
+        }
+        else // ScanBitmap (exFAT)
+        {
+            for (uint16_t b = 0; b < 512 && _usCluster < _usTotalClusters; ++b)
+            {
+                const uint8_t byte = _usSectorBuf[b];
+                for (uint8_t bit = 0; bit < 8; ++bit)
+                {
+                    const uint32_t cl = _usCluster++;
+                    if (cl >= _usTotalClusters) break;
+                    if ((byte & (1u << bit)) == 0) _usFreeClusters++;
+                }
+            }
+        }
+    }
+
+    const uint32_t tickUs = micros() - tickStartUs; // diagnostics: track the worst single tick
+    if (tickUs > _usWorstTickUs) _usWorstTickUs = tickUs;
+
+    const bool done = (_usSector >= _usEndSector) ||
+                      (_usState == UsageScanState::ScanFat && _usCluster >= _usTotalClusters + 2) ||
+                      (_usState == UsageScanState::ScanBitmap && _usCluster >= _usTotalClusters);
+    if (done)
+    {
+        [[maybe_unused]] const uint32_t wallMs = millis() - _usScanStartMs; // only used by logDebugP (compiled out in release)
+        // Sanity guard: free must not exceed total (catches a wrong exFAT bitmap-start assumption).
+        if (_usFreeClusters <= _usTotalClusters)
+        {
+            _usResTotal = (uint64_t)_usTotalClusters * _usClusterSizeBytes;
+            _usResFree = (uint64_t)_usFreeClusters * _usClusterSizeBytes;
+            _usResUsed = _usResTotal - _usResFree;
+            _usResValid = true;
+            logDebugP("Usage scan DONE: %lu/%lu clusters free; wall=%lu ms, worstTick=%lu us",
+                      (unsigned long)_usFreeClusters, (unsigned long)_usTotalClusters, (unsigned long)wallMs, (unsigned long)_usWorstTickUs);
+        }
+        else
+        {
+            _usResValid = false;
+            logDebugP("Usage scan DISCARDED (free>total; wall=%lu ms, worstTick=%lu us)", (unsigned long)wallMs, (unsigned long)_usWorstTickUs);
+        }
+        _usState = UsageScanState::Done;
+        return false;
+    }
+    return true;
+}
+
+// Read the last completed incremental scan result. False until the first scan has finished.
+bool SDCardModule::getCachedUsage(uint64_t &freeSpace, uint64_t &usedSpace, uint64_t &totalSpace) const
+{
+    if (!_usResValid) return false;
+    freeSpace = _usResFree;
+    usedSpace = _usResUsed;
+    totalSpace = _usResTotal;
+    return true;
+}
+
+/**
  * @brief Format a size in bytes to a human-readable format.
  *
  * This function formats a size in bytes to a human-readable format (e.g., KB, MB, GB, etc.).
@@ -1647,6 +2223,226 @@ String SDCardModule::getFsType()
 }
 
 /**
+ * @brief Get the volume label of the SD card.
+ *
+ * @return The volume label of the SD card, or an empty String if unavailable.
+ */
+namespace
+{
+    inline uint32_t rd32le(const uint8_t *p)
+    {
+        return static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8) |
+               (static_cast<uint32_t>(p[2]) << 16) | (static_cast<uint32_t>(p[3]) << 24);
+    }
+
+    // Absolute LBA of the mounted volume's boot sector: 0 for a superfloppy (no MBR), otherwise the
+    // MBR partition-1 start LBA. Reads sector 0 to decide.
+    uint32_t volumeBootSector(SDFAT_ &sd)
+    {
+        uint8_t s0[512];
+        if (!sd.card()->readSector(0, s0)) return 0;
+        if (memcmp(&s0[3], "EXFAT   ", 8) == 0) return 0; // exFAT superfloppy
+        if ((s0[0] == 0xEB || s0[0] == 0xE9) &&
+            (memcmp(&s0[0x36], "FAT", 3) == 0 || memcmp(&s0[0x52], "FAT", 3) == 0))
+            return 0;                           // FAT superfloppy
+        if (s0[510] == 0x55 && s0[511] == 0xAA) // MBR -> partition 1 start LBA
+        {
+            const uint32_t lba = rd32le(&s0[0x1C6]);
+            if (lba != 0) return lba;
+        }
+        return 0;
+    }
+
+    // Absolute sector of the exFAT root directory's first cluster (holds the volume-label entry).
+    bool exfatRootSector(SDFAT_ &sd, uint32_t &outSector)
+    {
+        if (sd.fatType() != FAT_TYPE_EXFAT) return false;
+        const uint32_t bs = volumeBootSector(sd);
+        uint8_t sec[512];
+        if (!sd.card()->readSector(bs, sec)) return false;
+        if (memcmp(&sec[3], "EXFAT   ", 8) != 0) return false;
+        const uint32_t clusterHeapOffset = rd32le(&sec[0x58]);
+        const uint32_t rootDirCluster = rd32le(&sec[0x60]);
+        const uint8_t spcShift = sec[0x6D];
+        if (rootDirCluster < 2) return false;
+        outSector = bs + clusterHeapOffset + ((rootDirCluster - 2) << spcShift);
+        return true;
+    }
+} // namespace
+
+String SDCardModule::getVolumeLabel()
+{
+    if (!isMounted()) return String();
+
+    uint8_t buffer[512];
+    if (!_sd.card()->readSector(0, buffer)) return String();
+
+    char raw[33] = {0};
+    size_t rawLen = 0;
+
+    if (_sd.fatType() == FAT_TYPE_EXFAT)
+    {
+        // exFAT: the label is a root-directory entry (type 0x83), not in the boot sector.
+        uint32_t rootSector;
+        if (!exfatRootSector(_sd, rootSector)) return String();
+        uint8_t rd[512];
+        if (!_sd.card()->readSector(rootSector, rd)) return String();
+        if (rd[0] != 0x83) return String(); // no label set
+        const uint8_t cnt = rd[1] <= 11 ? rd[1] : 11;
+        char label[12] = {0};
+        for (uint8_t i = 0; i < cnt; ++i)
+            label[i] = static_cast<char>(rd[2 + i * 2]); // UTF-16LE low byte
+        return String(label);
+    }
+    else
+    {
+        // FAT16/FAT32: 11-byte space-padded volume label in the boot sector (offset 0x2B/0x47)
+        const size_t off = (_sd.fatType() == FAT_TYPE_FAT32) ? 0x47 : 0x2B;
+        rawLen = 11;
+        memcpy(raw, &buffer[off], rawLen);
+    }
+
+    // Trim trailing spaces / NULs.
+    while (rawLen > 0 && (raw[rawLen - 1] == ' ' || raw[rawLen - 1] == '\0'))
+        raw[--rawLen] = '\0';
+
+    return String(raw);
+}
+
+// Set the volume label in place via a raw sector write. exFAT: the root-dir 0x83 label entry.
+// FAT16/32: the 11-byte boot-sector label. Verifies the target holds a plausible label entry before
+// writing so a wrong geometry can never scribble over data. Returns false on any inconsistency.
+// A volume-label character is valid if it is printable and not filesystem-reserved. exFAT is
+// permissive; FAT16/32 additionally forbids . , ; + = [ ] (and is uppercase-only).
+static bool validLabelChar(char c, bool exfat)
+{
+    const uint8_t u = static_cast<uint8_t>(c);
+    if (u < 0x20 || u == 0x7F) return false; // control characters
+    switch (c)
+    {
+        case '"':
+        case '*':
+        case '/':
+        case ':':
+        case '<':
+        case '>':
+        case '?':
+        case '\\':
+        case '|':
+            return false;
+        default:
+            break;
+    }
+    if (!exfat)
+    {
+        switch (c)
+        {
+            case '.':
+            case ',':
+            case ';':
+            case '+':
+            case '=':
+            case '[':
+            case ']':
+                return false;
+            default:
+                break;
+        }
+    }
+    return true;
+}
+
+bool SDCardModule::setVolumeLabel(const char *name)
+{
+    if (!isMounted() || name == nullptr) return false;
+
+    const bool exfat = (_sd.fatType() == FAT_TYPE_EXFAT);
+
+    // Validate length + character set HERE, in the API, so every caller (console, menu, future web)
+    // is checked the same way and an invalid label can never reach the card.
+    size_t len = 0;
+    while (len <= 11 && name[len] != '\0')
+        ++len;
+    if (len > 11)
+    {
+        logErrorP("setVolumeLabel: name too long (max 11 characters)");
+        return false;
+    }
+    for (size_t i = 0; i < len; ++i)
+    {
+        if (!validLabelChar(name[i], exfat))
+        {
+            const char shown = (name[i] >= 0x20 && name[i] < 0x7F) ? name[i] : '?';
+            logErrorP("setVolumeLabel: invalid character '%c' (0x%02X) for a %s label",
+                      shown, static_cast<uint8_t>(name[i]), exfat ? "exFAT" : "FAT");
+            return false;
+        }
+    }
+
+    if (exfat)
+    {
+        uint32_t rootSector;
+        if (!exfatRootSector(_sd, rootSector)) return false;
+
+        uint8_t rd[512];
+        if (!_sd.card()->readSector(rootSector, rd)) return false;
+
+        // Safety: the FIRST root entry must be a set (0x83) or empty (0x03) volume-label entry.
+        if (rd[0] != 0x83 && rd[0] != 0x03)
+        {
+            logErrorP("setVolumeLabel: unexpected exFAT root entry 0x%02X - aborting", rd[0]);
+            return false;
+        }
+
+        uint8_t count = 0;
+        for (uint8_t i = 0; i < 11 && name[i] != '\0'; ++i)
+        {
+            rd[2 + i * 2] = static_cast<uint8_t>(name[i]); // ASCII -> UTF-16LE low byte
+            rd[3 + i * 2] = 0x00;
+            ++count;
+        }
+        for (uint8_t i = count; i < 11; ++i)
+        {
+            rd[2 + i * 2] = 0x00;
+            rd[3 + i * 2] = 0x00;
+        }
+        rd[0] = count > 0 ? 0x83 : 0x03; // present / empty
+        rd[1] = count;
+
+        if (!_sd.card()->writeSector(rootSector, rd)) return false;
+        _sd.card()->syncDevice();
+        logInfoP("SD volume label set (exFAT): \"%s\"", name);
+        return true;
+    }
+
+    // FAT16 / FAT32: 11-byte space-padded, uppercase label in the boot sector.
+    const uint32_t bs = volumeBootSector(_sd);
+    uint8_t sec[512];
+    if (!_sd.card()->readSector(bs, sec)) return false;
+    if (sec[0] != 0xEB && sec[0] != 0xE9)
+    {
+        logErrorP("setVolumeLabel: not a FAT boot sector - aborting");
+        return false;
+    }
+
+    size_t n = 0;
+    while (n < 11 && name[n] != '\0')
+        ++n; // length, capped at 11 (no read past the NUL)
+    const size_t off = (_sd.fatType() == FAT_TYPE_FAT32) ? 0x47 : 0x2B;
+    for (uint8_t i = 0; i < 11; ++i)
+    {
+        char c = (i < n) ? name[i] : ' ';
+        if (c >= 'a' && c <= 'z') c = static_cast<char>(c - 'a' + 'A'); // FAT labels are uppercase
+        sec[off + i] = static_cast<uint8_t>(c);
+    }
+
+    if (!_sd.card()->writeSector(bs, sec)) return false;
+    _sd.card()->syncDevice();
+    logInfoP("SD volume label set (FAT): \"%s\"", name);
+    return true;
+}
+
+/**
  *
  * @brief Get the SD card informations such as manufacturer, product name, revision, serial number, etc.
  * @param info The structure to store the SD card information.
@@ -1673,8 +2469,6 @@ bool SDCardModule::readCardInfo(CardInfo &info)
 
     info.manufacturer = manufacturers.count(cid.mid) ? manufacturers.at(cid.mid) : "Unknown";
     logDebugP("Manufacturer: %02X", cid.mid);
-    
-
 
     info.productName = String(cid.pnm, 5);
 

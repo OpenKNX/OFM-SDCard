@@ -1,6 +1,9 @@
 #ifdef OPENKNX_SD_CARD_MODULE_ENABLE
 
     #include "SDCardModule.h"
+    #ifdef OPENKNX_FTC
+        #include "FileTransferClient.h" // self-register the SD storage backend with the FTC client
+    #endif
 
     #if !defined(SDCARD_SPI_INTERFACE) || \
         !defined(PIN_SDCARD_CS) ||        \
@@ -59,9 +62,69 @@ void SDCardModule::init()
  *
  * @param configured
  */
+// SdFat calls this on file create/modify to stamp the FAT/exFAT date+time. Pulls the current time
+// from the OpenKNX time source (KNX/NTP); falls back to a fixed date until the clock is valid.
+static void sdCardDateTimeCallback(uint16_t *date, uint16_t *time)
+{
+    if (openknx.time.isValid())
+    {
+        auto t = openknx.time.getLocalTime();
+        *date = FS_DATE(t.year, t.month, t.day);
+        *time = FS_TIME(t.hour, t.minute, t.second);
+    }
+    else
+    {
+        *date = FS_DATE(2026, 1, 1); // clock not set yet -> deterministic placeholder
+        *time = FS_TIME(0, 0, 0);
+    }
+}
+
+    #ifdef OPENKNX_FTC
+// --- FTC storage backend: SD ("sd/") ------------------------------------------------------------
+// Self-registered with the FTC client (see setup()), so the client needs no SD header. SD is SdFat
+// (FSFILE: fileSize()/curPosition()/seekSet()) -- its own handles + method names, NOT the client's fs::File.
+static FSFILE _ftcSdSrcFile;
+static FSFILE _ftcSdSinkFile;
+
+static int32_t sdOpen(const char *path)
+{
+    if (!sdCardModule.isMounted()) return -1;
+    _ftcSdSrcFile = sdCardModule.open(path, "r");
+    if (!_ftcSdSrcFile) return -1;
+    return (int32_t)_ftcSdSrcFile.fileSize();
+}
+static uint8_t sdRead(uint32_t offset, uint8_t *buf, uint8_t len)
+{
+    if (!_ftcSdSrcFile || buf == nullptr || len == 0) return 0;
+    if (_ftcSdSrcFile.curPosition() != offset && !_ftcSdSrcFile.seekSet(offset)) return 0;
+    const int r = _ftcSdSrcFile.read(buf, len);
+    return (r > 0) ? (uint8_t)r : 0;
+}
+static void sdClose() { _ftcSdSrcFile.close(); }
+
+static bool sdSinkOpen(const char *path)
+{
+    if (!sdCardModule.isMounted()) return false;
+    _ftcSdSinkFile = sdCardModule.open(path, "w"); // create / truncate
+    return (bool)_ftcSdSinkFile;
+}
+static int sdSinkWrite(const uint8_t *buf, uint16_t len)
+{
+    if (!_ftcSdSinkFile || buf == nullptr || len == 0) return -1;
+    return (int)_ftcSdSinkFile.write(buf, len);
+}
+static void sdSinkClose() { _ftcSdSinkFile.close(); }
+
+static bool sdAvailable() { return sdCardModule.isCardInserted() && sdCardModule.isMounted(); }
+// No cheap free-space API: getSDCardUsage() -> freeClusterCount() is O(FAT) (timed) and would stall the
+// transfer loop -> register nullptr (skip the pre-write gate; a full card is still caught per-chunk write).
+    #endif // OPENKNX_FTC
+
 void SDCardModule::setup(bool configured)
 {
     logDebugP("Setup...");
+    // Stamp firmware-created files with the real time (SdFat otherwise uses a fixed default date).
+    FsDateTime::setCallback(sdCardDateTimeCallback);
     _cardChanged = isCardInserted();
     if (_cardChanged) // Only initial on bootup!
     {
@@ -85,6 +148,12 @@ void SDCardModule::setup(bool configured)
         _fileBrowser = fileBrowserWidget;
     registerSdMenu();
     #endif // DEVICE_DISPLAY_MODULE
+
+    #ifdef OPENKNX_FTC
+    // Self-register the SD backend with the FTC client ("sd/..." paths). freeBytes = nullptr (see note above).
+    openknxFileTransferClient.registerFileBackend("sd", {sdOpen, sdRead, sdClose},
+                                                  {sdSinkOpen, sdSinkWrite, sdSinkClose}, sdAvailable, nullptr);
+    #endif
 }
 
 /**

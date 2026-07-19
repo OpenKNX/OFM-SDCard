@@ -11,7 +11,7 @@
  * @author      Erkan Çolak
  * @version     0.0.1
  * @date        2024-03-25
- * @copyright   Copyright (c) 2025, Érkan Çolak
+ * @copyright   Copyright (c) 2025, Erkan Çolak
  *
  */
 
@@ -158,7 +158,7 @@ class SDCardModule : public OpenKNX::Module
     size_t listDir(const char *path, std::vector<SdDirEntry> &out, size_t maxEntries = 0);
 
     inline const std::string name() { return SDCardModule_Display_Name; }
-    inline const std::string version() { return SDCardModule_Display_Version; }
+    inline const std::string version() { return MODULE_SDCard_Version; } // from library.json via versions.h (not the hard-coded define)
     bool Unmount(bool force = false);
     bool Mount();
     void ReMount();

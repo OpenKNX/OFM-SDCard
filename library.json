@@ -1,6 +1,6 @@
 {
   "name": "OFM-SDCard",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "OFM-SDCard is a library to access SD cards.",
   "homepage": "https://openknx.de",
   "authors": {

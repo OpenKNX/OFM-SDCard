@@ -4,6 +4,7 @@
 #endif
 #include "SdFileStore.h"
 #ifdef OPENKNX_SDCARD
+    #include <vector>
     #include "SDCardModule.h"
 
 namespace sd
@@ -12,7 +13,8 @@ namespace sd
 
     static FSFILE _src;
     static FSFILE _sink;
-    static FSFILE _dir;
+    static std::vector<SdDirEntry> _dirEntries; // one snapshot per listing (capped); FsFile stays inside the module
+    static size_t _dirIdx = 0;
 
     bool IFileStore::available() { return sdCardModule.isCardInserted() && sdCardModule.isMounted(); }
     uint64_t IFileStore::totalBytes() { return sdCardModule.getSDCardSize(); }
@@ -66,29 +68,42 @@ namespace sd
         if (!_sink || buf == nullptr || len == 0) return -1;
         return (int)_sink.write(buf, len);
     }
+    int IFileStore::sinkWriteAt(uint32_t offset, const uint8_t *buf, uint16_t len)
+    {
+        if (!_sink || buf == nullptr || len == 0) return -1;
+        if (_sink.curPosition() != offset && !_sink.seekSet(offset)) return -1;
+        return (int)_sink.write(buf, len);
+    }
     void IFileStore::sinkClose() { _sink.close(); }
 
     bool IFileStore::dirOpen(const char *path)
     {
+        _dirEntries.clear();
+        _dirIdx = 0;
         if (!sdCardModule.isCardInserted() || !sdCardModule.isMounted()) return false;
-        _dir = sdCardModule.open((path && *path) ? path : "/", "r");
-        return (bool)_dir;
+        // listDir() iterates internally (the FsFile never crosses the module boundary) and is capped -> correct
+        // AND bounded (no OOM on a huge dir). name + isDir + size in one pass, no per-entry re-open.
+        sdCardModule.listDir((path && *path) ? path : "/", _dirEntries, 512);
+        return true;
     }
     uint8_t IFileStore::dirNext(char *nameOut, uint16_t cap, uint32_t *sizeOut)
     {
-        if (!_dir || cap == 0) return 0;
-        FSFILE e = _dir.openNextFile();
-        if (!e) return 0;
-        e.getName(nameOut, cap);
-        const bool isDir = e.isDirectory();
-        if (sizeOut) *sizeOut = isDir ? 0 : (uint32_t)e.size();
-        e.close();
-        return isDir ? 2 : 1;
+        if (cap == 0 || _dirIdx >= _dirEntries.size()) return 0;
+        const SdDirEntry &e = _dirEntries[_dirIdx++];
+        strncpy(nameOut, e.name.c_str(), cap - 1);
+        nameOut[cap - 1] = '\0';
+        if (sizeOut) *sizeOut = e.isDir ? 0 : (uint32_t)e.size;
+        return e.isDir ? 2 : 1;
     }
-    void IFileStore::dirClose() { _dir.close(); }
+    void IFileStore::dirClose()
+    {
+        _dirEntries.clear();
+        _dirIdx = 0;
+    }
 
     bool IFileStore::remove(const char *path) { return sdCardModule.remove(path); }
     bool IFileStore::mkdir(const char *path) { return sdCardModule.mkdir(path); }
     bool IFileStore::rmdir(const char *path) { return sdCardModule.rmdir(path); }
+    bool IFileStore::rename(const char *oldPath, const char *newPath) { return sdCardModule.rename(oldPath, newPath); }
 } // namespace sd
 #endif

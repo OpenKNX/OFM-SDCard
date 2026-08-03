@@ -21,6 +21,7 @@ namespace sd
         bool exists(const char *path);
         bool sinkOpen(const char *path, uint32_t offset = 0);
         int sinkWrite(const uint8_t *buf, uint16_t len);
+        int sinkWriteAt(uint32_t offset, const uint8_t *buf, uint16_t len); // positioned write (FTC chunk)
         void sinkClose();
         bool dirOpen(const char *path);
         uint8_t dirNext(char *nameOut, uint16_t cap, uint32_t *sizeOut = nullptr); // 0 end · 1 file · 2 dir
@@ -28,6 +29,7 @@ namespace sd
         bool remove(const char *path);
         bool mkdir(const char *path);
         bool rmdir(const char *path);
+        bool rename(const char *oldPath, const char *newPath);
     };
 
     extern IFileStore fileStore;

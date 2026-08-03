@@ -1829,28 +1829,31 @@ std::vector<String> SDCardModule::getFileList(const char *path)
 size_t SDCardModule::listDir(const char *path, std::vector<SdDirEntry> &out, size_t maxEntries)
 {
     if (!isMounted()) return 0;
-    FSFILE dir = _sd.open(path);
-    if (!dir) return 0;
-
+    // Use the SAME proven mechanism as the `sdc ll` console command: iterate the directory reading ONLY
+    // getName() off each openNextFile handle (all SdFat guarantees on that transient child), then stat
+    // each name via a SEPARATE open (Statistics). Reading isDirectory()/size() directly off the
+    // openNextFile child while the parent directory is still iterating faults on exFAT -> never do that.
+    std::vector<String> names = getFileList(path);
     size_t count = 0;
-    char buffer[256];
-    while (FSFILE file = dir.openNextFile())
+    for (const String &name : names)
     {
-        if (maxEntries != 0 && count >= maxEntries)
-        {
-            file.close();
-            break;
-        }
+        if (maxEntries != 0 && count >= maxEntries) break;
         SdDirEntry entry;
-        file.getName(buffer, sizeof(buffer));
-        entry.name = buffer;
-        entry.isDir = file.isDirectory();
-        entry.size = entry.isDir ? 0 : (uint64_t)file.size();
-        file.close();
+        entry.name = name;
+        FileInfo info;
+        if (Statistics(path, name.c_str(), info))
+        {
+            entry.isDir = info.isDir;
+            entry.size = info.isDir ? 0 : (uint64_t)info.size;
+        }
+        else // stat failed -> list the name anyway, as a file with unknown size
+        {
+            entry.isDir = false;
+            entry.size = 0;
+        }
         out.push_back(entry);
         count++;
     }
-    dir.close();
     return count;
 }
 

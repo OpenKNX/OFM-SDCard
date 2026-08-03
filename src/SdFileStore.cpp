@@ -17,17 +17,22 @@ namespace sd
     static size_t _dirIdx = 0;
 
     bool IFileStore::available() { return sdCardModule.isCardInserted() && sdCardModule.isMounted(); }
+    // A read (_src) or write (_sink) transfer is live. Both share the single SPI bus + a single static
+    // handle each, so we serialize: one transfer per drive at a time (guards open()/sinkOpen()).
+    bool IFileStore::busy() { return (bool)_src || (bool)_sink; }
     uint64_t IFileStore::totalBytes() { return sdCardModule.getSDCardSize(); }
     uint64_t IFileStore::freeBytes()
     {
+        // Only the cached result; do NOT kick beginUsageScan() here. The module's incremental free-cluster
+        // scan has proven to reboot on some large exFAT cards, and `df` must never crash -> total-only is fine
+        // until the SD module's scan is fixed. 0 = unknown (the caller shows "total" without a free figure).
         uint64_t freeB = 0, usedB = 0, totalB = 0;
-        if (sdCardModule.getCachedUsage(freeB, usedB, totalB)) return freeB;
-        if (!sdCardModule.isUsageScanRunning()) sdCardModule.beginUsageScan();
-        return 0;
+        return sdCardModule.getCachedUsage(freeB, usedB, totalB) ? freeB : 0;
     }
 
     int32_t IFileStore::open(const char *path)
     {
+        if (busy()) return -1; // another transfer holds a handle -> refuse (no cursor hijack)
         if (!sdCardModule.isMounted()) return -1;
         _src = sdCardModule.open(path, "r");
         if (!_src) return -1;
@@ -51,8 +56,19 @@ namespace sd
 
     bool IFileStore::exists(const char *path) { return sdCardModule.exists(path); }
 
+    // Statistics() opens a module-local handle and stats it -> no FsFile crosses the module boundary
+    // (the old dir-iteration corruption) and no transfer handle is touched. Statistics prepends "/".
+    bool IFileStore::isDir(const char *path)
+    {
+        if (path == nullptr || *path == '\0') return false;
+        FileInfo info;
+        const char *rel = (path[0] == '/') ? path + 1 : path;
+        return sdCardModule.Statistics("", rel, info) && info.isDir;
+    }
+
     bool IFileStore::sinkOpen(const char *path, uint32_t offset)
     {
+        if (busy()) return false; // another transfer holds a handle -> refuse (no concurrent write on one drive)
         if (!sdCardModule.isMounted()) return false;
         _sink = sdCardModule.open(path, offset ? "r+" : "w");
         if (!_sink) return false;
@@ -81,8 +97,9 @@ namespace sd
         _dirEntries.clear();
         _dirIdx = 0;
         if (!sdCardModule.isCardInserted() || !sdCardModule.isMounted()) return false;
-        // listDir() iterates internally (the FsFile never crosses the module boundary) and is capped -> correct
-        // AND bounded (no OOM on a huge dir). name + isDir + size in one pass, no per-entry re-open.
+        // Snapshot the directory once (capped at 512) so dirNext() serves one entry per FTC round-trip
+        // without holding an FsFile open across ticks. listDir() uses the module's proven getName()+
+        // Statistics() mechanism -> no FsFile crosses the module boundary, no stat on an openNextFile handle.
         sdCardModule.listDir((path && *path) ? path : "/", _dirEntries, 512);
         return true;
     }

@@ -13,12 +13,14 @@ namespace sd
     {
       public:
         bool available();
+        bool busy();                   // a read/write transfer handle is open -> serialize one transfer per drive
         uint64_t totalBytes();
         uint64_t freeBytes();
         int32_t open(const char *path);
         uint8_t read(uint32_t offset, uint8_t *buf, uint8_t len);
         void close();
         bool exists(const char *path);
+        bool isDir(const char *path);  // stat-based type check (no transfer handle -> never blocked by busy())
         bool sinkOpen(const char *path, uint32_t offset = 0);
         int sinkWrite(const uint8_t *buf, uint16_t len);
         int sinkWriteAt(uint32_t offset, const uint8_t *buf, uint16_t len); // positioned write (FTC chunk)

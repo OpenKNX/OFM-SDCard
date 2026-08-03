@@ -1,5 +1,9 @@
+// Backward-compat: flag renamed OPENKNX_SD_CARD_MODULE_ENABLE -> OPENKNX_SDCARD; old name still works.
+#if defined(OPENKNX_SD_CARD_MODULE_ENABLE) && !defined(OPENKNX_SDCARD)
+    #define OPENKNX_SDCARD
+#endif
 #include "SdFileStore.h"
-#ifdef OPENKNX_SD_CARD_MODULE_ENABLE
+#ifdef OPENKNX_SDCARD
     #include "SDCardModule.h"
 
 namespace sd

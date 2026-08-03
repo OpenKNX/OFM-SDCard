@@ -1,6 +1,10 @@
+// Backward-compat: flag renamed OPENKNX_SD_CARD_MODULE_ENABLE -> OPENKNX_SDCARD; old name still works.
+#if defined(OPENKNX_SD_CARD_MODULE_ENABLE) && !defined(OPENKNX_SDCARD)
+    #define OPENKNX_SDCARD
+#endif
 #pragma once
 // sd::IFileStore — SD-card file store; identical API to efc::IFileStore, no shared base. SdFat-free header.
-#ifdef OPENKNX_SD_CARD_MODULE_ENABLE
+#ifdef OPENKNX_SDCARD
     #include <cstdint>
 
 namespace sd

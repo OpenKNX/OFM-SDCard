@@ -1,4 +1,8 @@
-#ifdef OPENKNX_SD_CARD_MODULE_ENABLE
+// Backward-compat: flag renamed OPENKNX_SD_CARD_MODULE_ENABLE -> OPENKNX_SDCARD; old name still works.
+#if defined(OPENKNX_SD_CARD_MODULE_ENABLE) && !defined(OPENKNX_SDCARD)
+    #define OPENKNX_SDCARD
+#endif
+#ifdef OPENKNX_SDCARD
 
     #include "SDCardModule.h"
     // Pure provider: OFM-SDCard includes nothing FTC and registers nowhere. It exposes its OWN self-contained
@@ -2439,4 +2443,4 @@ bool SDCardModule::readCardInfo(CardInfo &info)
 
 SDCardModule sdCardModule(PIN_SDCARD_CS); // ToDo: CS Pin for SD card module ?, not obtain them from device configuration
 
-#endif // OPENKNX_SD_CARD_MODULE_ENABLE
+#endif // OPENKNX_SDCARD

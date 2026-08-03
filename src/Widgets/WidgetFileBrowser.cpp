@@ -1,4 +1,8 @@
-#if defined(DEVICE_DISPLAY_MODULE) && defined(OPENKNX_SD_CARD_MODULE_ENABLE)
+// Backward-compat: flag renamed OPENKNX_SD_CARD_MODULE_ENABLE -> OPENKNX_SDCARD; old name still works.
+#if defined(OPENKNX_SD_CARD_MODULE_ENABLE) && !defined(OPENKNX_SDCARD)
+    #define OPENKNX_SDCARD
+#endif
+#if defined(DEVICE_DISPLAY_MODULE) && defined(OPENKNX_SDCARD)
 /**
  * @file        WidgetFileBrowser.cpp
  * @brief       Button-driven SD-card file browser widget for the OpenKNX DeviceDisplay
@@ -811,4 +815,4 @@ void WidgetFileBrowser::drawRename()
     _display->displayBuff();
 }
 
-#endif // DEVICE_DISPLAY_MODULE && OPENKNX_SD_CARD_MODULE_ENABLE
+#endif // DEVICE_DISPLAY_MODULE && OPENKNX_SDCARD

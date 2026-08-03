@@ -1,4 +1,8 @@
-#ifdef OPENKNX_SD_CARD_MODULE_ENABLE
+// Backward-compat: flag renamed OPENKNX_SD_CARD_MODULE_ENABLE -> OPENKNX_SDCARD; old name still works.
+#if defined(OPENKNX_SD_CARD_MODULE_ENABLE) && !defined(OPENKNX_SDCARD)
+    #define OPENKNX_SDCARD
+#endif
+#ifdef OPENKNX_SDCARD
 /**
  * @file        SdCardMenu.cpp
  * @brief       DeviceDisplay / menu integration for the SD-card module (settings
@@ -440,4 +444,4 @@ void SDCardModule::_refreshSdInfoCache(bool force)
 
     #endif
 
-#endif // OPENKNX_SD_CARD_MODULE_ENABLE
+#endif // OPENKNX_SDCARD

@@ -21,7 +21,7 @@ namespace sd
         void close();
         bool exists(const char *path);
         bool isDir(const char *path);  // stat-based type check (no transfer handle -> never blocked by busy())
-        bool sinkOpen(const char *path, uint32_t offset = 0);
+        bool sinkOpen(const char *path, uint32_t offset = 0, uint32_t sizeHint = 0); // sizeHint>0 -> preAllocate (fresh only)
         int sinkWrite(const uint8_t *buf, uint16_t len);
         int sinkWriteAt(uint32_t offset, const uint8_t *buf, uint16_t len); // positioned write (FTC chunk)
         void sinkClose();

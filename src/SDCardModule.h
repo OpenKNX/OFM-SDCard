@@ -158,7 +158,7 @@ class SDCardModule : public OpenKNX::Module
 
     bool mkdir(const char *path);
     bool rmdir(const char *path);
-    std::vector<String> getFileList(const char *path);
+    std::vector<String> getFileList(const char *path, size_t maxEntries = 512); // capped (no OOM)
     size_t listDir(const char *path, std::vector<SdDirEntry> &out, size_t maxEntries = 0);
 
     inline const std::string name() { return SDCardModule_Display_Name; }

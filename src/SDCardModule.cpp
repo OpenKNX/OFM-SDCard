@@ -1791,7 +1791,7 @@ bool SDCardModule::rmdir(const char *path)
  * @param path The path to the directory.
  * @return A vector of strings containing the list of files in the directory.
  */
-std::vector<String> SDCardModule::getFileList(const char *path)
+std::vector<String> SDCardModule::getFileList(const char *path, size_t maxEntries)
 {
     if (!isMounted()) return std::vector<String>();
     std::vector<String> fileList;
@@ -1800,6 +1800,11 @@ std::vector<String> SDCardModule::getFileList(const char *path)
     char buffer[256];
     while (FSFILE file = dir.openNextFile())
     {
+        if (maxEntries != 0 && fileList.size() >= maxEntries) // cap the heap
+        {
+            file.close();
+            break;
+        }
         file.getName(buffer, sizeof(buffer));
         file.close();
         fileList.push_back(buffer);
@@ -1829,32 +1834,28 @@ std::vector<String> SDCardModule::getFileList(const char *path)
 size_t SDCardModule::listDir(const char *path, std::vector<SdDirEntry> &out, size_t maxEntries)
 {
     if (!isMounted()) return 0;
-    // Use the SAME proven mechanism as the `sdc ll` console command: iterate the directory reading ONLY
-    // getName() off each openNextFile handle (all SdFat guarantees on that transient child), then stat
-    // each name via a SEPARATE open (Statistics). Reading isDirectory()/size() directly off the
-    // openNextFile child while the parent directory is still iterating faults on exFAT -> never do that.
-    std::vector<String> names = getFileList(path);
-    size_t count = 0;
-    for (const String &name : names)
+    // Single O(N) pass off SdFat's cached name/isDir/size; the old per-entry Statistics() was O(N*depth). Capped.
+    const size_t base = out.size();
+    FSFILE dir = _sd.open(path);
+    if (!dir) return 0;
+    char buffer[256];
+    while (FSFILE file = dir.openNextFile())
     {
-        if (maxEntries != 0 && count >= maxEntries) break;
+        if (maxEntries != 0 && (out.size() - base) >= maxEntries)
+        {
+            file.close();
+            break;
+        }
+        file.getName(buffer, sizeof(buffer));
         SdDirEntry entry;
-        entry.name = name;
-        FileInfo info;
-        if (Statistics(path, name.c_str(), info))
-        {
-            entry.isDir = info.isDir;
-            entry.size = info.isDir ? 0 : (uint64_t)info.size;
-        }
-        else // stat failed -> list the name anyway, as a file with unknown size
-        {
-            entry.isDir = false;
-            entry.size = 0;
-        }
+        entry.name = buffer;
+        entry.isDir = file.isDirectory();
+        entry.size = entry.isDir ? 0 : (uint64_t)file.size();
+        file.close();
         out.push_back(entry);
-        count++;
     }
-    return count;
+    dir.close();
+    return out.size() - base;
 }
 
 /**

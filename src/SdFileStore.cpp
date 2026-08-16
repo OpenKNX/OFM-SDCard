@@ -13,6 +13,7 @@ namespace sd
 
     static FSFILE _src;
     static FSFILE _sink;
+    static uint64_t _sinkWritten = 0; // highest byte written -> truncate target on close
     static std::vector<SdDirEntry> _dirEntries; // one snapshot per listing (capped); FsFile stays inside the module
     static size_t _dirIdx = 0;
 
@@ -66,12 +67,16 @@ namespace sd
         return sdCardModule.Statistics("", rel, info) && info.isDir;
     }
 
-    bool IFileStore::sinkOpen(const char *path, uint32_t offset)
+    bool IFileStore::sinkOpen(const char *path, uint32_t offset, uint32_t sizeHint)
     {
         if (busy()) return false; // another transfer holds a handle -> refuse (no concurrent write on one drive)
         if (!sdCardModule.isMounted()) return false;
         _sink = sdCardModule.open(path, offset ? "r+" : "w");
         if (!_sink) return false;
+        _sinkWritten = offset; // resume base (0 = fresh)
+        // Pre-allocate the contiguous cluster chain (fresh only) so exFAT does no mid-transfer FAT write that
+        // stalls the KNX loop; out-of-order chunks seek in [0, sizeHint). preAllocate() may fail -> fallback.
+        if (offset == 0 && sizeHint > 0) _sink.preAllocate(sizeHint);
         if (offset && !_sink.seekSet(offset))
         {
             _sink.close();
@@ -82,15 +87,28 @@ namespace sd
     int IFileStore::sinkWrite(const uint8_t *buf, uint16_t len)
     {
         if (!_sink || buf == nullptr || len == 0) return -1;
-        return (int)_sink.write(buf, len);
+        const int w = (int)_sink.write(buf, len);
+        if (w > 0 && _sink.curPosition() > _sinkWritten) _sinkWritten = _sink.curPosition();
+        return w;
     }
     int IFileStore::sinkWriteAt(uint32_t offset, const uint8_t *buf, uint16_t len)
     {
         if (!_sink || buf == nullptr || len == 0) return -1;
         if (_sink.curPosition() != offset && !_sink.seekSet(offset)) return -1;
-        return (int)_sink.write(buf, len);
+        const int w = (int)_sink.write(buf, len);
+        if (w > 0 && _sink.curPosition() > _sinkWritten) _sinkWritten = _sink.curPosition();
+        return w;
     }
-    void IFileStore::sinkClose() { _sink.close(); }
+    void IFileStore::sinkClose()
+    {
+        // truncate a preAllocate'd file to the bytes actually written, so a short upload is detectable.
+        if (_sink && _sinkWritten < _sink.fileSize())
+        {
+            _sink.seekSet(_sinkWritten);
+            _sink.truncate();
+        }
+        _sink.close();
+    }
 
     bool IFileStore::dirOpen(const char *path)
     {

@@ -5,6 +5,11 @@ with on-device management and a display widget. Entries are grouped by module ve
 to a commit in this repository.
 
 
+## 0.1.1: 2026-10-15
+
+* Change: the SD card menu, the file browser, the format confirmations and toasts and the partition info are English; comments and log lines too
+
+
 ## 0.1.0: 2026-09-15
 
 First tagged state.

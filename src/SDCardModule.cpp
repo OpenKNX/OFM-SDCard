@@ -635,7 +635,7 @@ bool SDCardModule::processCommand(const std::string command, bool diagnose)
 
 bool SDCardModule::_inMountingProcess()
 {
-    return ( // Die zwischenschritte dürfen wir hier an der stelle nicht stören
+    return ( // do not interrupt the intermediate steps here
         _mountStep == MOUNT_STEP_CARD_INSERTED ||
         _mountStep == MOUNT_STEP_INIT ||
         _mountStep == MOUNT_STEP_DETECT ||
@@ -1378,7 +1378,7 @@ void SDCardModule::readPartitionInfo()
 
             if (firstLBA == 0 && lastLBA == 0)
             {
-                continue; // Ungültige Partition ?
+                continue; // invalid partition
             }
 
             actualPartitionCount++;
@@ -1870,14 +1870,14 @@ size_t SDCardModule::listDir(const char *path, std::vector<SdDirEntry> &out, siz
 time_t SDCardModule::fatDateTimeToUnix(uint16_t fatDate, uint16_t fatTime)
 {
     struct tm t = {};
-    t.tm_sec = (fatTime & 0x1F) * 2;          // Sekunden (×2, da FAT nur 2-Sek-Schritte speichert)
-    t.tm_min = (fatTime >> 5) & 0x3F;         // Minuten
-    t.tm_hour = (fatTime >> 11) & 0x1F;       // Stunden
-    t.tm_mday = fatDate & 0x1F;               // Tag des Monats
-    t.tm_mon = ((fatDate >> 5) & 0x0F) - 1;   // Monat (0-basiert)
-    t.tm_year = ((fatDate >> 9) & 0x7F) + 80; // Jahre seit 1900 (FAT beginnt 1980, Unix 1970)
+    t.tm_sec = (fatTime & 0x1F) * 2;          // seconds (x2, FAT stores 2 s steps)
+    t.tm_min = (fatTime >> 5) & 0x3F;         // minutes
+    t.tm_hour = (fatTime >> 11) & 0x1F;       // hours
+    t.tm_mday = fatDate & 0x1F;               // day of month
+    t.tm_mon = ((fatDate >> 5) & 0x0F) - 1;   // month (0-based)
+    t.tm_year = ((fatDate >> 9) & 0x7F) + 80; // years since 1900 (FAT starts 1980, Unix 1970)
 
-    return mktime(&t); // Unix-Timestamp erstellen
+    return mktime(&t); // Unix timestamp
 }
 
 /**
@@ -1907,7 +1907,7 @@ bool SDCardModule::Statistics(const char *folder, const char *path, FileInfo &in
     info.ctime = fatDateTimeToUnix(createDate, createTime);
     info.atime = fatDateTimeToUnix(accessDate, accessTime);
     info.isDir = file.isDirectory();
-    info.blocksize = 512; // SD-Blockgröße fix 512 Bytes
+    info.blocksize = 512; // SD block size is fixed at 512 bytes
 
     file.close();
     return true;
@@ -1956,20 +1956,20 @@ bool SDCardModule::getSDCardUsage(uint64_t &freeSpace, uint64_t &usedSpace)
     startTime = micros();
     totalClusters = vol->clusterCount();
     endTime = micros();
-    logDebugP("clusterCount() dauert: %lu µs", endTime - startTime);
+    logDebugP("clusterCount() took: %lu µs", endTime - startTime);
 
     startTime = micros();
     clusterSize = vol->bytesPerCluster();
     endTime = micros();
-    logDebugP("bytesPerCluster() dauert: %lu µs", endTime - startTime);
+    logDebugP("bytesPerCluster() took: %lu µs", endTime - startTime);
 
     if (freeClusters == 0xFFFFFFFF || totalClusters == 0)
     {
         freeSpace = usedSpace = 0;
         return false; // Values are invalid ?
     }
-    freeSpace = (uint64_t)freeClusters * clusterSize;                // Freier Speicher in Bytes
-    usedSpace = ((uint64_t)totalClusters * clusterSize) - freeSpace; // Belegter Speicher
+    freeSpace = (uint64_t)freeClusters * clusterSize;                // free space in bytes
+    usedSpace = ((uint64_t)totalClusters * clusterSize) - freeSpace; // used space in bytes
     return true;
 }
 

@@ -217,8 +217,8 @@ void SDCardModule::registerSdMenu()
 {
     openknxDisplayModule.tryRegisterRootItem(buildSdMenu());
 
-    // Destructive format actions — the menu gates these behind a Nein/Ja confirm (the items carry
-    // confirmText), so the action fires only on Ja. requestFormat() is NON-blocking: it unmounts and
+    // Destructive format actions — the menu gates these behind a No/Yes confirm (the items carry
+    // confirmText), so the action fires only on Yes. requestFormat() is NON-blocking: it unmounts and
     // hands the work to the loop-driven state machine (Low-Level is spread over many ticks).
     openknxDisplayModule.tryRegisterAction("sd_qformat", []() { sdCardModule.requestFormat(0); });
     openknxDisplayModule.tryRegisterAction("sd_format", []() { sdCardModule.requestFormat(1); });

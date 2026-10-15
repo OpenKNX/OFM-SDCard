@@ -433,7 +433,7 @@ bool WidgetFileBrowser::handleListButton(const ButtonEvent &event)
                 }
                 else
                 {
-                    openFileInfo(e); // file -> Name/Size/Erstellt + Loeschen/Umbenennen overlay
+                    openFileInfo(e); // file -> Name/Size/Created + Delete/Rename overlay
                     drawFileInfo();
                 }
             }
@@ -466,13 +466,13 @@ bool WidgetFileBrowser::handleFileInfoButton(const ButtonEvent &event)
 
         case ButtonType::RIGHT:
         case ButtonType::SELECT:
-            if (_infoSel == 0) // Loeschen -> confirm guard (default Nein)
+            if (_infoSel == 0) // Delete -> confirm guard (default No)
             {
                 _confirmSel = 0;
                 _view = View::ConfirmDelete;
                 drawConfirmDelete();
             }
-            else if (_infoSel == 1) // Umbenennen -> char-scroll editor over the name
+            else if (_infoSel == 1) // Rename -> char-scroll editor over the name
             {
                 _rename = _selName;
                 if (_rename.empty())
@@ -485,7 +485,7 @@ bool WidgetFileBrowser::handleFileInfoButton(const ButtonEvent &event)
                 _view = View::Rename;
                 drawRename();
             }
-            else // Zurueck
+            else // Back
             {
                 _view = View::List;
                 drawBrowser();
@@ -497,19 +497,19 @@ bool WidgetFileBrowser::handleFileInfoButton(const ButtonEvent &event)
     }
 }
 
-// Delete guard, horizontal [Nein][Ja]: LEFT selects Nein, RIGHT selects Ja (LEFT does NOT exit).
-// UP/DOWN toggle. OK commits — Ja deletes, Nein returns to the file-info screen.
+// Delete guard, horizontal [No][Yes]: LEFT selects No, RIGHT selects Yes (LEFT does NOT exit).
+// UP/DOWN toggle. OK commits — Yes deletes, No returns to the file-info screen.
 bool WidgetFileBrowser::handleConfirmDeleteButton(const ButtonEvent &event)
 {
     switch (event.type)
     {
         case ButtonType::LEFT:
-            _confirmSel = 0; // Nein (left button)
+            _confirmSel = 0; // No (left button)
             drawConfirmDelete();
             return true;
 
         case ButtonType::RIGHT:
-            _confirmSel = 1; // Ja (right button)
+            _confirmSel = 1; // Yes (right button)
             drawConfirmDelete();
             return true;
 
@@ -521,10 +521,10 @@ bool WidgetFileBrowser::handleConfirmDeleteButton(const ButtonEvent &event)
 
         case ButtonType::SELECT:
             if (_confirmSel == 1)
-                doDelete(); // Ja -> remove + back to the reloaded list
+                doDelete(); // Yes -> remove + back to the reloaded list
             else
             {
-                _view = View::FileInfo; // Nein
+                _view = View::FileInfo; // No
                 drawFileInfo();
             }
             return true;

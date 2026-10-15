@@ -178,7 +178,7 @@ void WidgetSDCard::drawSDInfo()
             String free = "Free: " + String(sdCardModule.formatSize(freeBytes));
             String used = "Used: " + String(sdCardModule.formatSize(usedBytes));
 
-            // Anzeige
+            // draw
             _display->display->setTextWrap(false);
             _display->display->setTextSize(1);
             _display->display->setCursor(CENTER_X - (cardType.length() * 3), 15);

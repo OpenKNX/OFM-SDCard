@@ -18,11 +18,11 @@
 // the core module slim. SDCardModule member functions; only compiled under DEVICE_DISPLAY_MODULE.
     #ifdef DEVICE_DISPLAY_MODULE
 /**
- * @brief Build the "SD-Karte" settings sub-menu tree.
+ * @brief Build the "SD card" settings sub-menu tree.
  *
  * Item keys are unique so the MenuRegistry can dedup and the action registry can bind. The
  * read-only Info rows pull live values via valueProvider(), and stay "—" until a card is mounted.
- * @return The assembled root MenuOption representing the "SD-Karte" submenu.
+ * @return The assembled root MenuOption representing the "SD card" submenu.
  */
 MenuConfig::MenuOption SDCardModule::buildSdMenu()
 {
@@ -30,10 +30,10 @@ MenuConfig::MenuOption SDCardModule::buildSdMenu()
     using MenuBuild::addRow; // rows are built in the vector, not on the stack — see MenuConfig.h
 
     MenuOption sd;
-    sd.label = "SD-Karte";
+    sd.label = "SD card";
     sd.type = MenuConfig::Submenu;
     sd.key = "sd_root";
-    // Sit after Home-Tasten (60), before the pinned-last "Ueber". Without this it defaults to 0
+    // Sit after Home keys (60), before the pinned-last "About". Without this it defaults to 0
     // and would sort first in the root menu.
     sd.sortOrder = 65;
 
@@ -41,7 +41,7 @@ MenuConfig::MenuOption SDCardModule::buildSdMenu()
     root.reserve(9);
 
     addRow(root, [](MenuOption& files) {
-        files.label = "Dateien";
+        files.label = "Files";
         files.type = MenuConfig::Files;
         files.key = "sd_files";
     });
@@ -58,7 +58,7 @@ MenuConfig::MenuOption SDCardModule::buildSdMenu()
         sub.reserve(7);
 
         addRow(sub, [](MenuOption& o) {
-            o.label = "Typ";
+            o.label = "Type";
             o.type = MenuConfig::Readonly;
             o.key = "sd_info_type";
             o.valueProvider = []() -> std::string {
@@ -68,7 +68,7 @@ MenuConfig::MenuOption SDCardModule::buildSdMenu()
             };
         });
         addRow(sub, [](MenuOption& o) {
-            o.label = "Kapazitaet";
+            o.label = "Capacity";
             o.type = MenuConfig::Readonly;
             o.key = "sd_info_cap";
             o.valueProvider = []() -> std::string {
@@ -78,7 +78,7 @@ MenuConfig::MenuOption SDCardModule::buildSdMenu()
             };
         });
         addRow(sub, [](MenuOption& o) {
-            o.label = "Frei";
+            o.label = "Free";
             o.type = MenuConfig::Readonly;
             o.key = "sd_info_free";
             o.valueProvider = []() -> std::string {
@@ -88,7 +88,7 @@ MenuConfig::MenuOption SDCardModule::buildSdMenu()
             };
         });
         addRow(sub, [](MenuOption& o) {
-            o.label = "Belegt";
+            o.label = "Used";
             o.type = MenuConfig::Readonly;
             o.key = "sd_info_used";
             o.valueProvider = []() -> std::string {
@@ -120,7 +120,7 @@ MenuConfig::MenuOption SDCardModule::buildSdMenu()
             };
         });
         addRow(sub, [](MenuOption& o) {
-            o.label = "< Zurueck";
+            o.label = "< Back";
             o.type = MenuConfig::Back;
         });
     });
@@ -144,17 +144,17 @@ MenuConfig::MenuOption SDCardModule::buildSdMenu()
         qformat.type = MenuConfig::Toast;
         qformat.key = "sd_qformat";
         qformat.toast = "Quick-Format ...";
-        qformat.confirmText = "MBR wird geloescht! Danach neu formatieren.";
+        qformat.confirmText = "Deletes the MBR! Format afterwards.";
     });
 
     addRow(root, [](MenuOption& format) {
-        format.label = "Formatieren (exFAT)";
+        format.label = "Format (exFAT)";
         format.type = MenuConfig::Toast;
         format.key = "sd_format";
-        format.toast = "Formatieren ...";
+        format.toast = "Formatting ...";
         // exFAT is the only format that BLOCKS (~4s, single SdFat call) -> warn that the device is
         // briefly not ready. Quick/Low-Level run non-blocking in the background (no such hint needed).
-        format.confirmText = "ALLE Daten weg! Geraet ca. 4s nicht bereit.";
+        format.confirmText = "ALL data lost! Device busy ~4 s.";
     });
 
     addRow(root, [](MenuOption& llf) {
@@ -162,7 +162,7 @@ MenuConfig::MenuOption SDCardModule::buildSdMenu()
         llf.type = MenuConfig::Toast;
         llf.key = "sd_llf";
         llf.toast = "Low-Level-Format ...";
-        llf.confirmText = "Nullt die GANZE Karte! Dauert lange.";
+        llf.confirmText = "Zeroes the WHOLE card! Takes a long time.";
     });
 
     // Partition-Info: a lazy submenu of read-only lines built on entry from the live MBR/GPT
@@ -182,7 +182,7 @@ MenuConfig::MenuOption SDCardModule::buildSdMenu()
                     row.type = MenuConfig::Readonly;
                 });
             MenuBuild::addRow(items, [](MenuConfig::MenuOption& back) {
-                back.label = "< Zurueck";
+                back.label = "< Back";
                 back.type = MenuConfig::Back;
             });
             return items;
@@ -190,14 +190,14 @@ MenuConfig::MenuOption SDCardModule::buildSdMenu()
     });
 
     addRow(root, [](MenuOption& eject) {
-        eject.label = "Sicher auswerfen";
+        eject.label = "Safe eject";
         eject.type = MenuConfig::Toast;
         eject.key = "sd_eject";
-        eject.toast = "Ausgeworfen";
+        eject.toast = "Ejected";
     });
 
     addRow(root, [](MenuOption& back) {
-        back.label = "< Zurueck";
+        back.label = "< Back";
         back.type = MenuConfig::Back;
     });
 
@@ -205,7 +205,7 @@ MenuConfig::MenuOption SDCardModule::buildSdMenu()
 }
 
 /**
- * @brief Register the "SD-Karte" sub-menu + its action callbacks with the DeviceDisplay MenuRegistry.
+ * @brief Register the "SD card" sub-menu + its action callbacks with the DeviceDisplay MenuRegistry.
  *
  * Everything routes through the presence-guarded tryRegisterRootItem/tryRegisterAction, which are a
  * logged no-op (never a null-deref) when the display module or its registry is absent — e.g. when
@@ -229,7 +229,7 @@ void SDCardModule::registerSdMenu()
     openknxDisplayModule.tryRegisterAction("sd_info", []() { sdCardModule._menuActionSdInfo(); });
     openknxDisplayModule.tryRegisterAction("sd_eject", []() { sdCardModule._menuActionSafeEject(); });
 
-    // "Dateien" — activate the WidgetFileBrowser. The sd_files item is type Files, so MenuWidget
+    // "Files" — activate the WidgetFileBrowser. The sd_files item is type Files, so MenuWidget
     // fires _onFilesRequested first if wired; else it falls back to item.action bound here by key.
     // Binding via the action registry keeps browser activation owned by OFM-SDCard regardless of
     // which path the DeviceDisplay uses.
@@ -256,7 +256,7 @@ void SDCardModule::_menuActionSdInfo()
 }
 
 /**
- * @brief "Sicher auswerfen" action — SAFE eject via Unmount(false).
+ * @brief "Safe eject" action — SAFE eject via Unmount(false).
  * Unmount(false) honours the busy-guard: while the card is busy it refuses (returns false and
  * stays mounted); on success isMounted() becomes false. Never forces (no Unmount(true)).
  */
@@ -279,7 +279,7 @@ void SDCardModule::_menuActionSafeEject()
 }
 
 /**
- * @brief "Dateien" action — activate the reused WidgetFileBrowser at the SD root.
+ * @brief "Files" action — activate the reused WidgetFileBrowser at the SD root.
  *
  * Guarded by isMounted(): an unmounted (or absent) card has nothing to browse, so we log a hint and
  * no-op instead of opening an empty browser over a dead SdFat handle. When mounted, we make the

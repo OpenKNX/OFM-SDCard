@@ -75,8 +75,8 @@ class WidgetFileBrowser : public Widget
     enum class View : uint8_t
     {
         List,          // directory listing (navigation)
-        FileInfo,      // Name/Size/Erstellt + [Loeschen] [Umbenennen] [Zurueck]
-        ConfirmDelete, // [Nein]/[Ja] guard before remove()
+        FileInfo,      // Name/Size/Date + [Delete] [Rename] [Back]
+        ConfirmDelete, // [No]/[Yes] guard before remove()
         Rename         // char-scroll editor over the file name
     };
 
@@ -121,8 +121,8 @@ class WidgetFileBrowser : public Widget
     std::string _selName;    // captured file name for the active overlay
     uint64_t _selSize = 0;   // captured size (bytes)
     time_t _selCtime = 0;    // captured creation time (0 = unknown)
-    uint8_t _infoSel = 0;    // FileInfo action cursor: 0=Loeschen 1=Umbenennen 2=Zurueck
-    uint8_t _confirmSel = 0; // ConfirmDelete cursor: 0=Nein 1=Ja (default Nein)
+    uint8_t _infoSel = 0;    // FileInfo action cursor: 0=Delete 1=Rename 2=Back
+    uint8_t _confirmSel = 0; // ConfirmDelete cursor: 0=No 1=Yes (default No)
     std::string _rename;     // working copy for the rename editor
     uint8_t _renameCursor = 0;
     bool _blinkOn = true;

@@ -759,7 +759,7 @@ void SDCardModule::_mount()
             {
                 logErrorP("Volume initialization failed! Please check file system format!");
                 logErrorP(" -- Supported formats: %s --", FS_SUPPORT_FORMATS);
-                _cardUnformatted = true; // card present but no usable FS -> "Bitte formatieren"
+                _cardUnformatted = true; // card present but no usable FS -> "Please format"
                 _mountStep = MOUNT_STEP_ERROR;
                 return;
             }
@@ -938,7 +938,7 @@ BootSectorInfo SDCardModule::getBootSectorInfo(int fsType)
             break;
     }
 
-    logDebugP("Bootsektor erfolgreich gelesen!");
+    logDebugP("Boot sector read");
     return info;
 }
 
@@ -1049,13 +1049,13 @@ void SDCardModule::requestFormat(uint8_t op)
         case 1:
             _fmtOp = FmtOp::ExFat;
             logInfoP("Format started (background)...");
-            _formatToast("Formatiere exFAT...");
+            _formatToast("Formatting exFAT...");
             break;
         case 2:
             _fmtOp = FmtOp::LowLevel;
             _fmtHeartbeat = millis();
             logInfoP("Low-Level-Format started (background, %lu sectors)...", (unsigned long)_fmtTotal);
-            _formatToast("Low-Level laeuft...");
+            _formatToast("Low-level running...");
             break;
         default:
             logErrorP("Format: unknown op %u", op);
@@ -1072,7 +1072,7 @@ void SDCardModule::_closeCardAfterFormat()
     _sd.end();
     SPI_SD.end();
     _mountStep = MOUNT_STATE_UNMOUNTED;
-    _cardUnformatted = true; // no filesystem left -> SD widget prompts "Bitte formatieren"
+    _cardUnformatted = true; // no filesystem left -> SD widget prompts "Please format"
     _sdInfoGeneration++;
 }
 
@@ -1106,12 +1106,12 @@ void SDCardModule::_serviceFormat()
             if (ok)
             {
                 logInfoP("Quick-Format done (MBR cleared). Use 'format' next.");
-                _formatToast("Quick-Format fertig.\nBitte formatieren.");
+                _formatToast("Quick format done.\nPlease format.");
             }
             else
             {
                 logErrorP("Quick-Format FAILED (MBR write error).");
-                _formatToast("Quick-Format\nfehlgeschlagen!");
+                _formatToast("Quick format\nfailed!");
             }
             _closeCardAfterFormat(); // MBR gone -> no filesystem; park the card cleanly
             return;
@@ -1127,7 +1127,7 @@ void SDCardModule::_serviceFormat()
             if (!ok)
             {
                 logErrorP("Format FAILED. Supported: %s", FS_SUPPORT_FORMATS);
-                _formatToast("Format\nfehlgeschlagen!");
+                _formatToast("Format\nfailed!");
                 _closeCardAfterFormat();
                 return;
             }
@@ -1147,13 +1147,13 @@ void SDCardModule::_serviceFormat()
                 _sdInfoGeneration++;
                 resetCardInfo();
                 logInfoP("SD-Card successfully mounted!");
-                _formatToast("Karte formatiert\n(exFAT).");
+                _formatToast("Card formatted\n(exFAT).");
                 info();
             }
             else
             {
                 logErrorP("Format done, but mounting the fresh volume failed.");
-                _formatToast("Formatiert,\nMount-Fehler");
+                _formatToast("Formatted,\nmount error");
                 _closeCardAfterFormat();
             }
             return;
@@ -1165,7 +1165,7 @@ void SDCardModule::_serviceFormat()
             {
                 logErrorP("Low-Level-Format: no card.");
                 _fmtOp = FmtOp::None;
-                _formatToast("Low-Level: keine Karte");
+                _formatToast("Low-level: no card");
                 _closeCardAfterFormat();
                 return;
             }
@@ -1192,7 +1192,7 @@ void SDCardModule::_serviceFormat()
                 {
                     logErrorP("Low-Level-Format: write error at sector %lu. Aborted.", (unsigned long)_fmtSector);
                     _fmtOp = FmtOp::None;
-                    _formatToast("Low-Level\nfehlgeschlagen!");
+                    _formatToast("Low-level\nfailed!");
                     _closeCardAfterFormat();
                     return;
                 }
@@ -1214,7 +1214,7 @@ void SDCardModule::_serviceFormat()
             {
                 _fmtOp = FmtOp::None;
                 logInfoP("Low-Level-Format done. Use 'format' next.");
-                _formatToast("Low-Level fertig.\nBitte formatieren.");
+                _formatToast("Low-level done.\nPlease format.");
                 _closeCardAfterFormat(); // whole card zeroed -> no filesystem; park cleanly
             }
             return;
@@ -1416,21 +1416,21 @@ void SDCardModule::readPartitionInfoLines(std::vector<std::string> &out)
     out.clear();
     if (!isCardInserted())
     {
-        out.push_back("Keine Karte");
+        out.push_back("No card");
         return;
     }
     // After a format the card is ended/unmounted (SPI closed) yet still physically inserted, so
     // isCardInserted() passes while _sd.card() is null -- guard the deref below.
     if (!isMounted() || !_sd.card())
     {
-        out.push_back("Nicht gemountet");
+        out.push_back("Not mounted");
         return;
     }
 
     uint8_t buffer[512];
     if (!_sd.card()->readSector(0, buffer))
     {
-        out.push_back("Sektor 0 Fehler");
+        out.push_back("Sector 0 error");
         return;
     }
 
@@ -1458,7 +1458,7 @@ void SDCardModule::readPartitionInfoLines(std::vector<std::string> &out)
             snprintf(tmp, sizeof(tmp), " %lu-%lu", (unsigned long)start, (unsigned long)(start + count - 1));
             out.push_back(tmp);
         }
-        if (shown == 0) out.push_back("(keine Partition)");
+        if (shown == 0) out.push_back("(no partition)");
         return;
     }
 
@@ -1468,7 +1468,7 @@ void SDCardModule::readPartitionInfoLines(std::vector<std::string> &out)
         out.push_back("GPT");
         if (!_sd.card()->readSector(1, buffer))
         {
-            out.push_back("GPT-Header Fehler");
+            out.push_back("GPT header error");
             return;
         }
         uint32_t entryLBA;
@@ -1493,11 +1493,11 @@ void SDCardModule::readPartitionInfoLines(std::vector<std::string> &out)
             out.push_back(tmp);
             if (shown >= 8) break; // display cap
         }
-        if (shown == 0) out.push_back("(keine Partition)");
+        if (shown == 0) out.push_back("(no partition)");
         return;
     }
 
-    out.push_back("Keine Part.-Tabelle");
+    out.push_back("No partition table");
 }
 
 /**
@@ -1951,7 +1951,7 @@ bool SDCardModule::getSDCardUsage(uint64_t &freeSpace, uint64_t &usedSpace)
     startTime = micros();
     freeClusters = vol->freeClusterCount();
     endTime = micros();
-    logDebugP("freeClusterCount() dauert: %lu µs", endTime - startTime);
+    logDebugP("freeClusterCount() took: %lu µs", endTime - startTime);
 
     startTime = micros();
     totalClusters = vol->clusterCount();

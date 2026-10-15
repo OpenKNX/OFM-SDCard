@@ -672,7 +672,7 @@ void WidgetFileBrowser::drawFileInfo()
 
     // Info block: size + creation time.
     char line[32];
-    snprintf(line, sizeof(line), "Groesse: %s", sdCardModule.formatSize(_selSize));
+    snprintf(line, sizeof(line), "Size: %s", sdCardModule.formatSize(_selSize));
     d->setCursor(0, 13);
     d->print(line);
 
@@ -680,16 +680,16 @@ void WidgetFileBrowser::drawFileInfo()
     {
         struct tm tmv;
         gmtime_r(&_selCtime, &tmv);
-        snprintf(line, sizeof(line), "Erst: %02d.%02d.%02d %02d:%02d",
+        snprintf(line, sizeof(line), "Date: %02d.%02d.%02d %02d:%02d",
                  tmv.tm_mday, tmv.tm_mon + 1, (tmv.tm_year + 1900) % 100, tmv.tm_hour, tmv.tm_min);
     }
     else
-        snprintf(line, sizeof(line), "Erst: --");
+        snprintf(line, sizeof(line), "Date: --");
     d->setCursor(0, 23);
     d->print(line);
 
-    // Action rows: Loeschen / Umbenennen / Zurueck (selected row inverted).
-    static const char *const ACTIONS[3] = {"Loeschen", "Umbenennen", "Zurueck"};
+    // Action rows: Delete / Rename / Back (selected row inverted).
+    static const char *const ACTIONS[3] = {"Delete", "Rename", "Back"};
     const int16_t ROW_TOP = 36, ROW_H = 9;
     int16_t y = ROW_TOP;
     for (uint8_t i = 0; i < 3; i++, y += ROW_H)
@@ -722,7 +722,7 @@ void WidgetFileBrowser::drawConfirmDelete()
     d->setTextColor(WHITE);
 
     d->setCursor(0, 0);
-    d->print("Loeschen?");
+    d->print("Delete?");
     d->drawLine(0, 10, W, 10, WHITE);
 
     std::string name = _selName;
@@ -732,8 +732,8 @@ void WidgetFileBrowser::drawConfirmDelete()
     d->setCursor(0, 16);
     d->print(name.c_str());
 
-    // Two buttons [Nein] [Ja]; the selected one is filled, the other outlined.
-    static const char *const OPTS[2] = {"Nein", "Ja"};
+    // Two buttons [No] [Yes]; the selected one is filled, the other outlined.
+    static const char *const OPTS[2] = {"No", "Yes"};
     const int16_t by = 40, bh = 14, bw = 50;
     for (uint8_t i = 0; i < 2; i++)
     {
@@ -771,7 +771,7 @@ void WidgetFileBrowser::drawRename()
     d->setTextSize(1);
     d->setTextColor(WHITE);
     d->setCursor(2, 0);
-    d->print("Umbenennen:");
+    d->print("Rename:");
 
     // Characters at size 2, windowed so the cursor stays visible; the active cell blinks.
     d->setTextSize(2);
@@ -811,7 +811,7 @@ void WidgetFileBrowser::drawRename()
     d->setTextSize(1);
     d->setTextColor(WHITE);
     d->setCursor(2, (int16_t)(H - 9));
-    d->print("OK=ok  <=zurueck");
+    d->print("OK=ok  <=back");
     _display->displayBuff();
 }
 

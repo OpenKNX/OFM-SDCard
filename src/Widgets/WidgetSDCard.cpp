@@ -123,7 +123,7 @@ void WidgetSDCard::drawSDInfo()
     if (sdCardModule.isFormatting())
     {
         _display->display->setTextWrap(false);
-        String l1 = String("FORMATIERE ") + sdCardModule.formatOpName();
+        String l1 = String("FORMATTING ") + sdCardModule.formatOpName();
         _display->display->setCursor(CENTER_X - (l1.length() * 3), 24);
         _display->display->print(l1.c_str());
 
@@ -221,8 +221,8 @@ void WidgetSDCard::drawSDInfo()
         {
             if (sdCardModule.isCardUnformatted())
             {
-                CardMessage1 = "NICHT FORMATIERT";
-                CardMessage2 = "Bitte formatieren!";
+                CardMessage1 = "NOT FORMATTED";
+                CardMessage2 = "Please format!";
             }
             else if (sdCardModule.isMounted())
             {

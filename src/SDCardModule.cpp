@@ -152,7 +152,9 @@ void SDCardModule::loop(bool configured)
  */
 void SDCardModule::showHelp()
 {
+#ifdef OPENKNX_CONSOLE_DEV
     openknx.console.printHelpLine("sdc", "SD Card Control Module. Use 'sdc ?' for more information.");
+#endif
 }
 
 /**
@@ -164,6 +166,11 @@ void SDCardModule::showHelp()
  */
 bool SDCardModule::processCommand(const std::string command, bool diagnose)
 {
+#ifndef OPENKNX_CONSOLE_DEV
+    (void)command; // "sdc" console is part of OPENKNX_CONSOLE_DEV
+    (void)diagnose;
+    return false;
+#else
     if (diagnose) return false;
     bool bRet = true;
 
@@ -631,6 +638,7 @@ bool SDCardModule::processCommand(const std::string command, bool diagnose)
         bRet = false;
     }
     return bRet;
+#endif
 } // end of processCommand
 
 bool SDCardModule::_inMountingProcess()

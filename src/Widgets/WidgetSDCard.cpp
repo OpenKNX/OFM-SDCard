@@ -1,4 +1,4 @@
-#ifdef DEVICE_DISPLAY_MODULE
+#if defined(DEVICE_DISPLAY_MODULE) && (defined(OPENKNX_SDCARD) || defined(OPENKNX_SD_CARD_MODULE_ENABLE))
     #include "WidgetSDCard.h"
     #include "OpenKNX.h"
 

@@ -5,9 +5,11 @@ with on-device management and a display widget. Entries are grouped by module ve
 to a commit in this repository.
 
 
-## 0.1.1: 2026-10-15
+## 0.1.1: 2026-10-23
 
 * Change: the SD card menu, the file browser, the format confirmations and toasts and the partition info are English; comments and log lines too
+* Change: the `sdc` console commands are built only with `OPENKNX_CONSOLE_DEV`; without it the module answers no `sdc` command
+* Fix: the SD card widget is built only together with the SD card module; a display build without it no longer compiles the widget
 
 
 ## 0.1.0: 2026-09-15

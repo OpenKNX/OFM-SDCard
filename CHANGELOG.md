@@ -9,6 +9,10 @@ to a commit in this repository.
 
 * Fix: `dirClose()` releases the directory snapshot buffer (up to 512 entries); `clear()` kept it
 * Fix: a throw inside `listDir()` leaves no partial snapshot allocated
+* Change: the SD card widget shows the free space as a card on page 1 and type, maker, total, used space and a bar on page 2
+* Change: the file browser list looks like the menu list: path and position in the header, 10 px rows, scrollbar from 6 entries
+* Fix: after a delete the file browser list keeps five rows and the selection visible
+* Change: the SD card name entry accepts only the 11 characters a FAT/exFAT volume label takes
 
 ## 0.1.1: 2026-10-23
 

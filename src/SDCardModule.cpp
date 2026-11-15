@@ -5,6 +5,9 @@
 #ifdef OPENKNX_SDCARD
 
     #include "SDCardModule.h"
+    #ifdef DEVICE_DISPLAY_MODULE
+        #include "Icons/UiIcons.h"
+    #endif
     // Pure provider: OFM-SDCard includes nothing FTC and registers nowhere. It exposes its OWN self-contained
     // store class sd::IFileStore (SdFileStore.h/.cpp); consumers (FTC, FileManager) use that directly.
 
@@ -135,8 +138,14 @@ void SDCardModule::loop(bool configured)
         {
             _cardChanged = currentCardInserted;
             _mountStep = MOUNT_STEP_CARD_CHANGED;
+    #ifdef DEVICE_DISPLAY_MODULE
+            _cardEdge(currentCardInserted);
+    #endif
         }
         _mount(); // State machine for card operations
+    #ifdef DEVICE_DISPLAY_MODULE
+        _cardNoteTick();
+    #endif
     }
 
     #ifdef DEVICE_DISPLAY_MODULE
@@ -1030,6 +1039,9 @@ void SDCardModule::requestFormat(uint8_t op)
         logErrorP("No SD card inserted!");
         return;
     }
+    #ifdef DEVICE_DISPLAY_MODULE
+    _inNote = InNote::None; // the format reports itself
+    #endif
 
     Unmount(true); // close the current volume + SPI (forced: a format proceeds regardless of busy)
 
@@ -1057,13 +1069,13 @@ void SDCardModule::requestFormat(uint8_t op)
         case 1:
             _fmtOp = FmtOp::ExFat;
             logInfoP("Format started (background)...");
-            _formatToast("Formatting exFAT...");
+            _formatToast(FmtNote::Running, "Formatting exFAT...");
             break;
         case 2:
             _fmtOp = FmtOp::LowLevel;
             _fmtHeartbeat = millis();
             logInfoP("Low-Level-Format started (background, %lu sectors)...", (unsigned long)_fmtTotal);
-            _formatToast("Low-level running...");
+            _formatToast(FmtNote::Running, "Low-level running...");
             break;
         default:
             logErrorP("Format: unknown op %u", op);
@@ -1084,13 +1096,44 @@ void SDCardModule::_closeCardAfterFormat()
     _sdInfoGeneration++;
 }
 
+    #ifdef DEVICE_DISPLAY_MODULE
+// Card detect edge after boot (setup() takes the boot state without one).
+void SDCardModule::_cardEdge(bool inserted)
+{
+    _inNote = inserted ? InNote::Mounting : InNote::None;
+    if (!inserted) openknxDisplayModule.toast(ToastLevel::Warn, OpenKNX::Ui::kRowSd, "SD card removed");
+}
+
+// From the 500 ms detect tick: "SD card in" once mounted, with the free space of a scan started for this card.
+void SDCardModule::_cardNoteTick()
+{
+    if (_inNote == InNote::None) return;
+    if (_inNote == InNote::Mounting)
+    {
+        if (_mountStep == MOUNT_STATE_ERROR || _mountStep == MOUNT_STATE_UNMOUNTED || _mountStep == MOUNT_STATE_CARD_REMOVED)
+            _inNote = InNote::None; // not mounted: no "in" toast
+        if (_mountStep != MOUNT_STATE_MOUNTED) return;
+        _usState = UsageScanState::Idle; // a result from before this mount does not count
+        beginUsageScan();
+        _inNote = InNote::Counting;
+    }
+    if (isUsageScanRunning()) return;
+    _inNote = InNote::None;
+    char line[24] = "";
+    if (_usState == UsageScanState::Done && _usResValid) snprintf(line, sizeof(line), "%s free", formatSize(_usResFree));
+    openknxDisplayModule.toast(ToastLevel::Info, OpenKNX::Ui::kRowSd, "SD card in", line);
+}
+    #endif
+
 // Brief on-screen message so a format gives display feedback (menu OR console trigger), mirroring
-// the console log. No-op when no DeviceDisplay is present.
-void SDCardModule::_formatToast(const char *msg)
+// the console log. No-op when no DeviceDisplay is present. '\n' splits the two lines, 17 characters each.
+void SDCardModule::_formatToast(FmtNote note, const char *msg)
 {
     #ifdef DEVICE_DISPLAY_MODULE
-    openknxDisplayModule.showToast(msg);
+    const ToastLevel level = note == FmtNote::Done ? ToastLevel::Ok : note == FmtNote::Failed ? ToastLevel::Warn : ToastLevel::Info;
+    openknxDisplayModule.toastText(level, msg);
     #else
+    (void)note;
     (void)msg;
     #endif
 }
@@ -1114,12 +1157,12 @@ void SDCardModule::_serviceFormat()
             if (ok)
             {
                 logInfoP("Quick-Format done (MBR cleared). Use 'format' next.");
-                _formatToast("Quick format done.\nPlease format.");
+                _formatToast(FmtNote::Done, "Quick format done\nPlease format.");
             }
             else
             {
                 logErrorP("Quick-Format FAILED (MBR write error).");
-                _formatToast("Quick format\nfailed!");
+                _formatToast(FmtNote::Failed, "Quick format\nfailed!");
             }
             _closeCardAfterFormat(); // MBR gone -> no filesystem; park the card cleanly
             return;
@@ -1135,7 +1178,7 @@ void SDCardModule::_serviceFormat()
             if (!ok)
             {
                 logErrorP("Format FAILED. Supported: %s", FS_SUPPORT_FORMATS);
-                _formatToast("Format\nfailed!");
+                _formatToast(FmtNote::Failed, "Format\nfailed!");
                 _closeCardAfterFormat();
                 return;
             }
@@ -1155,13 +1198,13 @@ void SDCardModule::_serviceFormat()
                 _sdInfoGeneration++;
                 resetCardInfo();
                 logInfoP("SD-Card successfully mounted!");
-                _formatToast("Card formatted\n(exFAT).");
+                _formatToast(FmtNote::Done, "Card formatted\n(exFAT).");
                 info();
             }
             else
             {
                 logErrorP("Format done, but mounting the fresh volume failed.");
-                _formatToast("Formatted,\nmount error");
+                _formatToast(FmtNote::Failed, "Formatted,\nmount error");
                 _closeCardAfterFormat();
             }
             return;
@@ -1173,7 +1216,7 @@ void SDCardModule::_serviceFormat()
             {
                 logErrorP("Low-Level-Format: no card.");
                 _fmtOp = FmtOp::None;
-                _formatToast("Low-level: no card");
+                _formatToast(FmtNote::Failed, "Low-level: no card");
                 _closeCardAfterFormat();
                 return;
             }
@@ -1200,7 +1243,7 @@ void SDCardModule::_serviceFormat()
                 {
                     logErrorP("Low-Level-Format: write error at sector %lu. Aborted.", (unsigned long)_fmtSector);
                     _fmtOp = FmtOp::None;
-                    _formatToast("Low-level\nfailed!");
+                    _formatToast(FmtNote::Failed, "Low-level\nfailed!");
                     _closeCardAfterFormat();
                     return;
                 }
@@ -1222,7 +1265,7 @@ void SDCardModule::_serviceFormat()
             {
                 _fmtOp = FmtOp::None;
                 logInfoP("Low-Level-Format done. Use 'format' next.");
-                _formatToast("Low-level done.\nPlease format.");
+                _formatToast(FmtNote::Done, "Low-level done.\nPlease format.");
                 _closeCardAfterFormat(); // whole card zeroed -> no filesystem; park cleanly
             }
             return;

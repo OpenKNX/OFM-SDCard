@@ -249,7 +249,13 @@ class SDCardModule : public OpenKNX::Module
     static constexpr uint32_t FMT_HEARTBEAT_MS = 5000;   // Low-Level: log a progress heartbeat every 5 s
     void _serviceFormat();                               // perform one incremental step of _fmtOp
     void _closeCardAfterFormat();                        // park the card (end _sd + SPI) after Quick/Low-Level
-    void _formatToast(const char *msg);                  // brief on-screen message (no-op without a display)
+    enum class FmtNote : uint8_t
+    {
+        Running, // Info
+        Done,    // Ok
+        Failed   // Warn
+    };
+    void _formatToast(FmtNote note, const char *msg); // brief on-screen message (no-op without a display)
 
     time_t fatDateTimeToUnix(uint16_t fatDate, uint16_t fatTime);
     BootSectorInfo getBootSectorInfo(int fsType);
@@ -283,6 +289,17 @@ class SDCardModule : public OpenKNX::Module
     WidgetFileBrowser *_fileBrowser = nullptr;
     bool _fileBrowserOpen = false;
     bool _fileBrowserActivated = false;
+
+    // Toasts for a card put in or taken out after boot: an insert edge arms "SD card in", posted once mounted and counted.
+    enum class InNote : uint8_t
+    {
+        None,
+        Mounting, // inserted, mount running
+        Counting  // mounted, free space scan running
+    };
+    InNote _inNote = InNote::None;
+    void _cardEdge(bool inserted);
+    void _cardNoteTick();
     #endif // DEVICE_DISPLAY_MODULE
 
     MountStep _mountStep = MOUNT_STEP_INIT; // Default mount step - Initialize SPI

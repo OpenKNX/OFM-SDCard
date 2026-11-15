@@ -7,6 +7,8 @@ to a commit in this repository.
 
 ## 0.1.2: not released
 
+* Change (SD card widget, menu): the state texts drop the capitals and exclamation marks ("No SD card", "Insert a card", "Formatting"), as the confirm texts of Quick-Format, Format and Low-Level-Format
+* Fix (file browser): in a sub-folder the selection on the last row stays there after a delete, a rename or a reload; the clamp left out the ".." row and moved it up by one
 * Feature: an inserted card shows "SD card in" with its free space once it is mounted, a removed card "SD card removed" as a warning; not at boot
 * Change: the format messages show as toasts with a level: running Info, done Ok, failed Warn
 * Fix: `dirClose()` releases the directory snapshot buffer (up to 512 entries); `clear()` kept it

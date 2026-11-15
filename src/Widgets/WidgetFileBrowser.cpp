@@ -187,13 +187,15 @@ void WidgetFileBrowser::reload()
 {
     // (Re)populate the entry cache for the current path via the Phase-0 single-pass
     // listing API. Leaves the cache empty when the card is not mounted (listDir no-ops).
+    const std::string path = currentPath();
     _entries.clear();
-    sdCardModule.listDir(currentPath().c_str(), _entries);
+    sdCardModule.listDir(path.c_str(), _entries);
     _needsReload = false;
 
-    // Keep the selection valid after the listing changed (mock clamps fsel to len-1).
-    if (_selectedIndex >= _entries.size())
-        _selectedIndex = _entries.empty() ? 0 : (_entries.size() - 1);
+    // Keep the selection on a valid row; outside the root the ".." row comes first.
+    const size_t rows = (path == "/" ? 0 : 1) + _entries.size();
+    if (_selectedIndex >= rows)
+        _selectedIndex = rows == 0 ? 0 : rows - 1;
     if (_windowStart > _selectedIndex)
         _windowStart = _selectedIndex;
 }
@@ -224,8 +226,7 @@ void WidgetFileBrowser::drawBrowser()
     const size_t upCount = hasUp ? 1 : 0;
     const size_t total = upCount + _entries.size();
 
-    // Clamp selection defensively (reload() already clamps against _entries, but the
-    // up-entry shifts indices by one) and refresh the scroll window before drawing.
+    // Clamp the selection to the rows (reload() does the same) and refresh the scroll window.
     if (total == 0)
         _selectedIndex = 0;
     else if (_selectedIndex >= total)

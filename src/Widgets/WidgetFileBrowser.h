@@ -117,7 +117,7 @@ class WidgetFileBrowser : public Widget
 
     std::vector<String> pathStack;      // Directory segments from root (empty = root "/")
     std::vector<SdDirEntry> _entries;   // Cached listing of the current directory
-    size_t _selectedIndex = 0;          // Index of the highlighted entry within _entries
+    size_t _selectedIndex = 0;          // Highlighted row; outside the root row 0 is ".."
     size_t _windowStart = 0;            // First visible entry index (scroll window top)
     bool _needsReload = true;           // Entry cache is stale; reload() required before use
 

@@ -35,13 +35,24 @@ class WidgetSDCard : public Widget
     void setDisplayModule(i2cDisplay *displayModule) override;
     i2cDisplay *getDisplayModule() const override;
 
+    // Pages: page 0 is the card, page 1 the details while the usage is known; refreshed in drawSDInfo().
+    size_t getPageCount() const override { return _pages; }
+    size_t getCurrentPage() const override { return _page; }
+    void setPage(size_t page) override;
+    void nextPage() override { setPage((_page + 1) % _pages); }
+    void prevPage() override { setPage((_page + _pages - 1) % _pages); }
+
   private:
+    static constexpr uint32_t REDRAW_INTERVAL_MS = 1000;
+
     WidgetState _state;
     uint32_t _displayTime;
     WidgetFlags _action;
     i2cDisplay *_display;
     std::string _name = "SD-Card";
-    uint32_t _duration_timerStart = 0;
+    uint32_t _lastDraw = 0;
+    uint8_t _page = 0, _pages = 1;
+    bool _forceRedraw = true;
 
     // Free/used come from SDCardModule's NON-BLOCKING incremental scan. This widget only (re)triggers
     // a scan (beginUsageScan) on mount and every SDINFO_USAGE_REFRESH_MS, and reads the last finished
@@ -49,10 +60,12 @@ class WidgetSDCard : public Widget
     // often no longer causes a loop spike.
     static constexpr uint32_t SDINFO_USAGE_REFRESH_MS = 30000;
     uint32_t _lastUsageQuery = 0; // last time a scan was (re)triggered; 0 = trigger on next draw (mount)
-    bool _cachedUsageValid = false;
-    uint64_t _cachedTotal = 0, _cachedUsed = 0, _cachedFree = 0;
 
     void drawSDInfo();
+    void drawFormat(Adafruit_SSD1306 &d);
+    void drawCard(Adafruit_SSD1306 &d, uint64_t freeBytes, uint64_t totalBytes);
+    void drawDetails(Adafruit_SSD1306 &d, uint64_t usedBytes, uint64_t totalBytes);
+    void drawState(Adafruit_SSD1306 &d, const char *const *lines, uint8_t count);
 };
 
 #endif // DEVICE_DISPLAY_MODULE

@@ -1,9 +1,30 @@
 #if defined(DEVICE_DISPLAY_MODULE) && (defined(OPENKNX_SDCARD) || defined(OPENKNX_SD_CARD_MODULE_ENABLE))
     #include "WidgetSDCard.h"
+    #include "DisplayUi.h"
     #include "OpenKNX.h"
 
+namespace Ui = OpenKNX::Ui;
+
+namespace
+{
+    constexpr uint8_t kLabelCols = 6; // details rows: labels up to 5 characters, values up to 15
+    constexpr int16_t kPctW = 4 * Ui::CharW; // "100%"
+
+    /** @brief Card symbol: SD card with a cut corner and four contacts, in x53..75 y1..27. */
+    void drawSdSymbol(Adafruit_SSD1306 &d)
+    {
+        d.drawFastHLine(53, 1, 17, WHITE);
+        d.drawLine(69, 1, 75, 7, WHITE);
+        d.drawFastVLine(75, 7, 21, WHITE);
+        d.drawFastHLine(53, 27, 23, WHITE);
+        d.drawFastVLine(53, 1, 27, WHITE);
+        for (int16_t x = 56; x <= 68; x += 4)
+            d.fillRect(x, 4, 2, 6, WHITE);
+    }
+} // namespace
+
 WidgetSDCard::WidgetSDCard(uint32_t displayTime, WidgetFlags action)
-    : _displayTime(displayTime), _action(action), _state(WidgetState::STOPPED), _display(nullptr)
+    : _state(WidgetState::STOPPED), _displayTime(displayTime), _action(action), _display(nullptr)
 {
 }
 
@@ -24,7 +45,7 @@ void WidgetSDCard::start()
 
     logDebugP("Starting...");
     _state = WidgetState::RUNNING;
-    _duration_timerStart = millis();
+    _forceRedraw = true;
 }
 
 void WidgetSDCard::stop()
@@ -53,20 +74,33 @@ void WidgetSDCard::resume()
     {
         logDebugP("Resuming...");
         _state = WidgetState::RUNNING;
+        _forceRedraw = true;
     }
 }
 
-static uint32_t lastUpdate = millis();
+void WidgetSDCard::setPage(size_t page)
+{
+    if (page >= _pages)
+        page = _pages - 1;
+    if (page != _page)
+    {
+        _page = (uint8_t)page;
+        _forceRedraw = true;
+    }
+}
+
 void WidgetSDCard::loop()
 {
     if (_state != WidgetState::RUNNING || !_display)
         return;
 
-    if (delayCheck(lastUpdate, 1000)) // Update every second
-    {
-        lastUpdate = millis();
-        drawSDInfo();
-    }
+    // Once per second for the live values, at once after a page change.
+    const uint32_t now = millis();
+    if (!_forceRedraw && now - _lastDraw < REDRAW_INTERVAL_MS)
+        return;
+    _lastDraw = now;
+    _forceRedraw = false;
+    drawSDInfo();
 }
 
 uint32_t WidgetSDCard::getDisplayTime() const
@@ -94,52 +128,17 @@ void WidgetSDCard::drawSDInfo()
     if (!_display)
         return;
 
-    _display->display->clearDisplay();
-    _display->display->setTextColor(WHITE);
-    _display->display->setTextSize(1);
+    Adafruit_SSD1306 &d = *_display->display;
+    Ui::begin(d);
+    d.clearDisplay();
 
-    const uint16_t SCREEN_WIDTH = _display->GetDisplayWidth();
-    const uint16_t CENTER_X = SCREEN_WIDTH / 2;
-
-    _display->display->setCursor((SCREEN_WIDTH - (getName().length() * 6)) / 2, 0);
-    _display->display->print(getName().c_str());
-
-    uint32_t elapsedMillis = millis() - _duration_timerStart;
-    uint32_t remainingMillis = (_displayTime > elapsedMillis) ? (_displayTime - elapsedMillis) : 0;
-    if (remainingMillis == 0)
-    {
-        _duration_timerStart = millis();
-        remainingMillis = _displayTime; // Reset to initial time
-    }
-    uint16_t circlePosition = (SCREEN_WIDTH * elapsedMillis) / _displayTime;
-    _display->display->fillCircle(circlePosition, 10, 2, WHITE);
-    _display->display->drawCircle(circlePosition, 10, 2, BLACK);
-
-    _display->display->drawLine(0, 10, SCREEN_WIDTH, 10, WHITE);
-
-    // A running format takes over the whole widget body. Redrawn 1x/s by loop() while the widget is
-    // shown, so the percent updates live. Percent advances only for Low-Level (Quick/exFAT complete
-    // in a single tick and are practically never caught mid-format). The console logs in parallel.
+    // A running format takes over the whole widget, on one page. Percent advances only for Low-Level
+    // (Quick/exFAT complete in a single tick and are practically never caught mid-format).
     if (sdCardModule.isFormatting())
     {
-        _display->display->setTextWrap(false);
-        String l1 = String("FORMATTING ") + sdCardModule.formatOpName();
-        _display->display->setCursor(CENTER_X - (l1.length() * 3), 24);
-        _display->display->print(l1.c_str());
-
-        // Fine percent (0.01 % resolution) so the number visibly moves even on a huge card.
-        const uint16_t pm = sdCardModule.formatPermyriad(); // 0..10000 = 0.00..100.00 %
-        const unsigned whole = pm / 100, frac = pm % 100;
-        String l2 = String(whole) + "." + (frac < 10 ? "0" : "") + String(frac) + "%";
-        _display->display->setCursor(CENTER_X - (l2.length() * 3), 38);
-        _display->display->print(l2.c_str());
-
-        // Progress bar (fine: fills by hundredths of a percent).
-        const int16_t barX = 14, barW = SCREEN_WIDTH - 28;
-        _display->display->drawRect(barX, 52, barW, 8, WHITE);
-        if (pm > 0)
-            _display->display->fillRect(barX, 52, (int16_t)((uint32_t)barW * pm / 10000), 8, WHITE);
-
+        _pages = 1;
+        _page = 0;
+        drawFormat(d);
         _display->displayBuff();
         return;
     }
@@ -149,115 +148,110 @@ void WidgetSDCard::drawSDInfo()
         // Free/used come from the NON-BLOCKING incremental scan: SDCardModule advances the FAT /
         // exFAT-bitmap count a few sectors per loop() (never a single spike). We only (re)TRIGGER a
         // scan here — on mount (_lastUsageQuery == 0) and then periodically — and read the last
-        // COMPLETED result via getCachedUsage(). Because triggering is free, refreshing often is now
-        // safe. The 1x/s countdown redraw just reuses whatever result is cached.
+        // COMPLETED result via getCachedUsage(). The 1x/s redraw just reuses whatever result is cached.
         if (_lastUsageQuery == 0 || (uint32_t)(millis() - _lastUsageQuery) >= SDINFO_USAGE_REFRESH_MS)
         {
             _lastUsageQuery = millis();
             sdCardModule.beginUsageScan(); // non-blocking; result lands over the next loops
         }
+        uint64_t freeBytes = 0, usedBytes = 0, totalBytes = 0;
+        if (sdCardModule.getCachedUsage(freeBytes, usedBytes, totalBytes) && totalBytes > 0)
         {
-            uint64_t f = 0, u = 0, t = 0;
-            _cachedUsageValid = sdCardModule.getCachedUsage(f, u, t);
-            _cachedTotal = t;
-            _cachedFree = f;
-            _cachedUsed = u;
-        }
-        uint64_t freeBytes = _cachedFree, usedBytes = _cachedUsed, totalBytes = _cachedTotal;
-        if (_cachedUsageValid && totalBytes > 0)
-        {
-            float usedPercentage = (totalBytes > 0) ? ((float)usedBytes * 100.0f / totalBytes) : 0.0f;
-
-            // Infos
-            String cardType = String("Type: ") + sdCardModule.getCardType(true).c_str() + " (" + String(sdCardModule.getCardInfo().manufacturer) + ")";
-            if (cardType.length() > 18)
-            {
-                cardType = cardType.substring(0, 18) + "...";
-            }
-            String total = "Total: " + String(sdCardModule.formatSize(totalBytes));
-            String free = "Free: " + String(sdCardModule.formatSize(freeBytes));
-            String used = "Used: " + String(sdCardModule.formatSize(usedBytes));
-
-            // draw
-            _display->display->setTextWrap(false);
-            _display->display->setTextSize(1);
-            _display->display->setCursor(CENTER_X - (cardType.length() * 3), 15);
-            _display->display->print(cardType.c_str());
-
-            _display->display->setCursor(CENTER_X - (total.length() * 3), 25);
-            _display->display->print(total.c_str());
-
-            _display->display->setCursor(CENTER_X - (free.length() * 3), 35);
-            _display->display->print(free.c_str());
-
-            _display->display->setCursor(CENTER_X - (used.length() * 3), 45);
-            _display->display->print(used.c_str());
-
-            // Show the storage bar with dynamic width based on usage percentage
-            String percentageText = String((int)usedPercentage) + "%";
-            int barWidth = SCREEN_WIDTH - (percentageText.length() * 12); // Total width of the bar
-            int usedBarLength = (int)(usedPercentage * barWidth / 100);   // Dynamic width based on usage percentage
-
-            _display->display->drawRect(1, 55, barWidth, 8, WHITE);      // Draw the outline of the bar
-            _display->display->fillRect(1, 55, usedBarLength, 8, WHITE); // Fill the bar based on usage
-
-            // Display the percentage text at the end of the bar
-            _display->display->setCursor(1 + barWidth + 5, 55); // Position the text dynamically
-            _display->display->print(percentageText.c_str());
+            _pages = 2;
+            if (_page == 1)
+                drawDetails(d, usedBytes, totalBytes);
+            else
+                drawCard(d, freeBytes, totalBytes);
         }
         else
         {
-            _display->display->setCursor(CENTER_X - 40, 20);
-            _display->display->print("Could not read SD info.");
+            _pages = 1;
+            _page = 0;
+            static const char *const kNoInfo[] = {"Could not read", "SD info."};
+            drawState(d, kNoInfo, 2);
         }
+        _display->displayBuff();
+        return;
     }
-    else
+
+    _lastUsageQuery = 0; // invalidate cache -> re-query immediately on (re-)mount
+    _pages = 1;
+    _page = 0;
+
+    static const char *const kRemoved[] = {"SD-CARD REMOVED.", "Please insert card."};
+    static const char *const kUnformatted[] = {"NOT FORMATTED", "Please format!"};
+    static const char *const kNoRead[] = {"SD-CARD INSERTED.", "Mounted.", "Could not read info!"};
+    static const char *const kNotMounted[] = {"SD-CARD INSERTED.", "Not mounted!", "Check card."};
+    static const char *const kMounting[] = {"SD-CARD MOUNTING.", "Please wait..."};
+    static const char *const kUnmounting[] = {"SD-CARD UNMOUNTING.", "Please wait..."};
+    static const char *const kError[] = {"SD-CARD ERROR!", "Check card!"};
+    const char *const *lines = kRemoved;
+    uint8_t count = 2;
+    if (sdCardModule.isCardInserted())
     {
-        _lastUsageQuery = 0; // invalidate cache -> re-query immediately on (re-)mount
-
-        String CardMessage1 = "SD-CARD REMOVED.";
-        String CardMessage2 = "Please insert card.";
-        if (sdCardModule.isCardInserted())
-        {
-            if (sdCardModule.isCardUnformatted())
-            {
-                CardMessage1 = "NOT FORMATTED";
-                CardMessage2 = "Please format!";
-            }
-            else if (sdCardModule.isMounted())
-            {
-                CardMessage1 = "SD-CARD INSERTED.";
-                CardMessage2 = "Mounted. Could not read info!";
-            }
-            else if (sdCardModule.isUnmounted())
-            {
-                CardMessage1 = "SD-CARD INSERTED.";
-                CardMessage2 = "Not mounted! Check card.";
-            }
-            else if (sdCardModule.isMounting())
-            {
-                CardMessage1 = "SD-CARD MOUNTING.";
-                CardMessage2 = "Please wait...";
-            }
-            else if (sdCardModule.isUnmounting())
-            {
-                CardMessage1 = "SD-CARD UNMOUNTING.";
-                CardMessage2 = "Please wait...";
-            }
-            else if (sdCardModule.isError())
-            {
-                CardMessage1 = "SD-CARD ERROR!";
-                CardMessage2 = "Check card!";
-            }
-        }
-
-        _display->display->setCursor(CENTER_X - (CardMessage1.length() * 3), 30);
-        _display->display->print(CardMessage1);
-        _display->display->setCursor(CENTER_X - (CardMessage2.length() * 3), 45);
-        _display->display->print(CardMessage2);
+        if (sdCardModule.isCardUnformatted())
+            lines = kUnformatted;
+        else if (sdCardModule.isMounted())
+            lines = kNoRead, count = 3;
+        else if (sdCardModule.isUnmounted())
+            lines = kNotMounted, count = 3;
+        else if (sdCardModule.isMounting())
+            lines = kMounting;
+        else if (sdCardModule.isUnmounting())
+            lines = kUnmounting;
+        else if (sdCardModule.isError())
+            lines = kError;
     }
-
+    drawState(d, lines, count);
     _display->displayBuff();
+}
+
+void WidgetSDCard::drawFormat(Adafruit_SSD1306 &d)
+{
+    Ui::header(d, _name.c_str());
+    // Fine percent (0.01 % resolution) so the number visibly moves even on a huge card.
+    const uint16_t pm = sdCardModule.formatPermyriad(); // 0..10000 = 0.00..100.00 %
+    char b[12];
+    snprintf(b, sizeof(b), "%u.%02u%%", (unsigned)(pm / 100), (unsigned)(pm % 100));
+    Ui::printCentred(d, 14, b, 2);
+    Ui::bar(d, 0, 32, d.width(), (uint16_t)(pm / 10));
+    Ui::printCentred(d, 44, "FORMATTING");
+    Ui::printCentred(d, 54, sdCardModule.formatOpName());
+}
+
+void WidgetSDCard::drawCard(Adafruit_SSD1306 &d, uint64_t freeBytes, uint64_t totalBytes)
+{
+    // formatSize() returns one static buffer: copy the first value before the second call.
+    char freeText[12], detail[24];
+    snprintf(freeText, sizeof(freeText), "%s", sdCardModule.formatSize(freeBytes));
+    snprintf(detail, sizeof(detail), "free of %s", sdCardModule.formatSize(totalBytes));
+    Ui::statusCard(d, drawSdSymbol, nullptr, freeText, detail);
+    Ui::pageDots(d, _pages, 0);
+}
+
+void WidgetSDCard::drawDetails(Adafruit_SSD1306 &d, uint64_t usedBytes, uint64_t totalBytes)
+{
+    Ui::header(d, _name.c_str(), _pages, 1);
+    Ui::row(d, 0, "Type", sdCardModule.getCardType(true).c_str(), kLabelCols);
+    Ui::row(d, 1, "Maker", sdCardModule.getCardInfo().manufacturer.c_str(), kLabelCols);
+    Ui::row(d, 2, "Total", sdCardModule.formatSize(totalBytes), kLabelCols);
+    Ui::row(d, 3, "Used", sdCardModule.formatSize(usedBytes), kLabelCols);
+
+    // Used share as a bar with the percent after it, both on the last row.
+    const uint64_t permille = usedBytes * 1000 / totalBytes;
+    char pct[8];
+    snprintf(pct, sizeof(pct), "%u%%", (unsigned)(usedBytes * 100 / totalBytes));
+    const int16_t pctX = (int16_t)(d.width() - Ui::ValueEnd - (int16_t)strlen(pct) * Ui::CharW);
+    Ui::bar(d, 0, Ui::Row0 + 4 * Ui::Pitch, (int16_t)(d.width() - Ui::ValueEnd - kPctW - 4), (uint16_t)(permille > 1000 ? 1000 : permille));
+    d.setCursor(pctX, Ui::Row0 + 4 * Ui::Pitch);
+    d.print(pct);
+}
+
+void WidgetSDCard::drawState(Adafruit_SSD1306 &d, const char *const *lines, uint8_t count)
+{
+    drawSdSymbol(d);
+    for (uint8_t i = 0; i < count; i++)
+        Ui::printCentred(d, (int16_t)(34 + i * Ui::Pitch), lines[i]);
 }
 
 #endif // DEVICE_DISPLAY_MODULE

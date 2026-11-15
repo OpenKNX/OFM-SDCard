@@ -7,6 +7,8 @@ to a commit in this repository.
 
 ## 0.1.2: not released
 
+* Feature: an inserted card shows "SD card in" with its free space once it is mounted, a removed card "SD card removed" as a warning; not at boot
+* Change: the format messages show as toasts with a level: running Info, done Ok, failed Warn
 * Fix: `dirClose()` releases the directory snapshot buffer (up to 512 entries); `clear()` kept it
 * Fix: a throw inside `listDir()` leaves no partial snapshot allocated
 * Change: the SD card widget shows the free space as a card on page 1 and type, maker, total, used space and a bar on page 2

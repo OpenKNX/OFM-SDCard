@@ -82,6 +82,8 @@ class WidgetFileBrowser : public Widget
 
     void drawBrowser();
     void _updateWindow();
+    void printName(Adafruit_SSD1306 &d, int16_t y, const char *name, bool dir, int16_t maxChars);
+    void drawScrollbar(Adafruit_SSD1306 &d, size_t first, size_t count);
 
     // Per-view button handlers (dispatched from handleButtonEvent by _view).
     bool handleListButton(const ButtonEvent &event);
@@ -100,6 +102,9 @@ class WidgetFileBrowser : public Widget
     std::string fullPathOf(const std::string &name) const; // "/name" at root, "/dir/name" else
 
     static constexpr size_t VISIBLE_ROWS = 5;
+    static constexpr int16_t LIST_TOP = 12; // list rows from y12, 10 px each
+    static constexpr int16_t TEXT_X = 2;    // list text column
+    static constexpr int16_t SCROLL_X = 124; // rows end before the scrollbar at x126..127
     static constexpr uint8_t NAME_EDIT_MAX = 32; // char-scroll rename cap
     static constexpr uint32_t BLINK_MS = 500;    // rename cursor blink
 

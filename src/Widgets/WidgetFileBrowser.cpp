@@ -14,11 +14,14 @@
  **/
 
     #include "WidgetFileBrowser.h"
+    #include "DisplayUi.h"
     #include "OpenKNX.h"
 
     #include <algorithm> // std::min
     #include <cstdio>    // snprintf
     #include <cstring>   // strlen
+
+namespace Ui = OpenKNX::Ui;
 
 WidgetFileBrowser::WidgetFileBrowser(uint32_t displayTime, WidgetFlags action)
     : _state(WidgetState::STOPPED), _displayTime(displayTime), _action(action), _display(nullptr)
@@ -228,119 +231,99 @@ void WidgetFileBrowser::drawBrowser()
     else if (_selectedIndex >= total)
         _selectedIndex = total - 1;
     _updateWindow();
+    // A listing that shrank after a delete keeps the window full; the selection stays inside it.
+    if (total <= VISIBLE_ROWS)
+        _windowStart = 0;
+    else if (_windowStart > total - VISIBLE_ROWS)
+        _windowStart = total - VISIBLE_ROWS;
 
-    _display->display->clearDisplay();
-    _display->display->setTextWrap(false);
-    _display->display->setTextColor(WHITE);
-    _display->display->setTextSize(1);
+    Adafruit_SSD1306 &d = *_display->display;
+    Ui::begin(d);
+    d.clearDisplay();
 
-    const int16_t SCREEN_WIDTH = _display->GetDisplayWidth();
-
-    // --- Header: "SD:<path>" left, "(sel+1)/total" right, separator line (like WidgetSDCard).
-    // Header path is truncated with "..." so it never collides with the page counter.
-    char counter[16];
-    snprintf(counter, sizeof(counter), "%u/%u",
-             (unsigned)(total == 0 ? 0 : _selectedIndex + 1), (unsigned)total);
-    const int counterChars = (int)strlen(counter);
-    const int counterPx = counterChars * 6;
-
-    std::string header = "SD:";
-    header += path;
-    // Available character cells for the header before the right-aligned counter (+1 gap).
-    const int headerCells = (SCREEN_WIDTH - counterPx) / 6 - 1;
-    if (headerCells > 3 && (int)header.size() > headerCells)
-        header = header.substr(0, (size_t)headerCells - 3) + "...";
-
-    _display->display->setCursor(0, 0);
-    _display->display->print(header.c_str());
-    _display->display->setCursor(SCREEN_WIDTH - counterPx, 0);
-    _display->display->print(counter);
-    _display->display->drawLine(0, 10, SCREEN_WIDTH, 10, WHITE);
+    // Header: "SD:<path>" left (cut with "..."), "(sel+1)/total" right, dotted line.
+    char title[24];
+    snprintf(title, sizeof(title), "SD:%s", path.c_str());
+    Ui::headerPos(d, title, (uint16_t)(total == 0 ? 0 : _selectedIndex + 1), (uint16_t)total);
 
     // Empty directory (no entries and no up-entry -> only possible at an empty root).
     if (total == 0)
     {
-        _display->display->setCursor(0, 14);
-        _display->display->print("(empty)");
+        d.setCursor(TEXT_X, LIST_TOP + 1);
+        d.print("(empty)");
         _display->displayBuff();
         return;
     }
 
-    // --- Rows -----------------------------------------------------------------------------
-    const int16_t ROW_TOP = 13;    // First row baseline just below the separator line
-    const int16_t ROW_HEIGHT = 10; // Vertical pitch per row (fits 5 rows in y=13..63)
-    const int16_t ROW_TEXT_DY = 1; // Text offset inside the inverted row rectangle
-
+    // Rows: inverse selection up to x123 and value cells ending at x123 when the scrollbar is drawn, else x127 / x125.
+    const bool scrollbar = total > VISIBLE_ROWS;
+    const int16_t rowW = scrollbar ? SCROLL_X : d.width();
+    const int16_t valueEnd = scrollbar ? SCROLL_X : (int16_t)(d.width() - Ui::ValueEnd);
     const size_t windowEnd = std::min(total, _windowStart + VISIBLE_ROWS);
-    int16_t y = ROW_TOP;
-    for (size_t i = _windowStart; i < windowEnd; i++, y += ROW_HEIGHT)
+    int16_t y = LIST_TOP;
+    for (size_t i = _windowStart; i < windowEnd; i++, y += Ui::Pitch)
     {
         const bool selected = (i == _selectedIndex);
 
-        // Build the label + right-aligned value for this row.
-        std::string label;
-        std::string value;
-        if (hasUp && i == 0)
+        // Label + right-aligned value; formatSize() is printed before any further call reuses its buffer.
+        const char *name = "..";    // Up-entry
+        const char *value = nullptr;
+        bool dir = false;
+        if (!(hasUp && i == 0))
         {
-            label = ".."; // Up-entry (mock: "< ..")
-        }
-        else
-        {
-            const size_t entryIdx = i - upCount;
-            const SdDirEntry &e = _entries[entryIdx];
-            if (e.isDir)
-            {
-                label = std::string(e.name.c_str()) + "/"; // Folder: name + "/" suffix
-                value = "DIR";
-            }
-            else
-            {
-                label = e.name.c_str();
-                value = sdCardModule.formatSize(e.size); // Right-aligned human size
-            }
-        }
-
-        // Reserve space for the right-aligned value (+1 cell gap) so the label truncation
-        // never overlaps it. valueCells==0 when there is no value (up-entry).
-        const int valueCells = value.empty() ? 0 : ((int)value.size() + 1);
-        const int totalCells = SCREEN_WIDTH / 6;
-        int labelCells = totalCells - valueCells;
-        if (labelCells < 1)
-            labelCells = 1;
-
-        // Truncate long names with "..." (mock marquees; on-device we truncate).
-        if ((int)label.size() > labelCells)
-        {
-            if (labelCells > 3)
-                label = label.substr(0, (size_t)labelCells - 3) + "...";
-            else
-                label = label.substr(0, (size_t)labelCells);
+            const SdDirEntry &e = _entries[i - upCount];
+            name = e.name.c_str();
+            dir = e.isDir;
+            value = dir ? "DIR" : sdCardModule.formatSize(e.size);
         }
 
         if (selected)
-        {
-            // Selected row inverted: filled bar + black text (matches the mock's .sel row).
-            _display->display->fillRect(0, y - 1, SCREEN_WIDTH, ROW_HEIGHT, WHITE);
-            _display->display->setTextColor(BLACK);
-        }
-        else
-        {
-            _display->display->setTextColor(WHITE);
-        }
+            d.fillRect(0, y, rowW, Ui::Pitch, WHITE);
+        d.setTextColor(selected ? BLACK : WHITE);
 
-        _display->display->setCursor(0, y + ROW_TEXT_DY - 1);
-        _display->display->print(label.c_str());
-
-        if (!value.empty())
+        int16_t labelEnd = valueEnd; // the label ends 2 px before the value, else before valueEnd
+        if (value)
         {
-            const int valuePx = (int)value.size() * 6;
-            _display->display->setCursor(SCREEN_WIDTH - valuePx, y + ROW_TEXT_DY - 1);
-            _display->display->print(value.c_str());
+            int16_t vx = (int16_t)(valueEnd - (int16_t)strlen(value) * Ui::CharW);
+            if (vx < 0)
+                vx = 0;
+            d.setCursor(vx, (int16_t)(y + 1));
+            d.print(value);
+            labelEnd = (int16_t)(vx - 2);
         }
+        printName(d, (int16_t)(y + 1), name, dir, (int16_t)((labelEnd - TEXT_X) / Ui::CharW));
     }
 
-    _display->display->setTextColor(WHITE); // Restore default for subsequent draws
+    if (scrollbar)
+        drawScrollbar(d, _windowStart, total);
+    d.setTextColor(WHITE);
     _display->displayBuff();
+}
+
+void WidgetFileBrowser::printName(Adafruit_SSD1306 &d, int16_t y, const char *name, bool dir, int16_t maxChars)
+{
+    // A folder shows "name/"; the "/" is part of the text that is cut with "...".
+    if (!dir)
+    {
+        Ui::printCut(d, TEXT_X, y, name, maxChars);
+        return;
+    }
+    char b[24];
+    snprintf(b, sizeof(b), "%s/", name);
+    Ui::printCut(d, TEXT_X, y, b, maxChars);
+}
+
+void WidgetFileBrowser::drawScrollbar(Adafruit_SSD1306 &d, size_t first, size_t count)
+{
+    // Dots at x127 every second row y12..60, thumb x126..127 placed by the first visible row.
+    const int16_t track = (int16_t)(VISIBLE_ROWS * Ui::Pitch);
+    for (int16_t py = LIST_TOP; py < LIST_TOP + track; py += 2)
+        d.drawPixel(127, py, WHITE);
+    int16_t thumb = (int16_t)(track * (int32_t)VISIBLE_ROWS / (int32_t)count);
+    if (thumb < 4)
+        thumb = 4;
+    const int16_t ty = (int16_t)(LIST_TOP + (int32_t)(track - thumb) * (int32_t)first / (int32_t)(count - VISIBLE_ROWS));
+    d.fillRect(126, ty, 2, thumb, WHITE);
 }
 
 bool WidgetFileBrowser::handleButtonEvent(const ButtonEvent &event)
@@ -656,10 +639,8 @@ void WidgetFileBrowser::drawFileInfo()
     auto *d = _display->display;
     const int16_t W = _display->GetDisplayWidth();
 
+    Ui::begin(*d);
     d->clearDisplay();
-    d->setTextWrap(false);
-    d->setTextSize(1);
-    d->setTextColor(WHITE);
 
     // Title: file name (truncated) + separator.
     std::string name = _selName;
@@ -716,10 +697,8 @@ void WidgetFileBrowser::drawConfirmDelete()
     auto *d = _display->display;
     const int16_t W = _display->GetDisplayWidth();
 
+    Ui::begin(*d);
     d->clearDisplay();
-    d->setTextWrap(false);
-    d->setTextSize(1);
-    d->setTextColor(WHITE);
 
     d->setCursor(0, 0);
     d->print("Delete?");
@@ -765,11 +744,8 @@ void WidgetFileBrowser::drawRename()
     const int16_t W = _display->GetDisplayWidth();
     const int16_t H = _display->GetDisplayHeight();
 
+    Ui::begin(*d);
     d->clearDisplay();
-    d->setTextWrap(false);
-
-    d->setTextSize(1);
-    d->setTextColor(WHITE);
     d->setCursor(2, 0);
     d->print("Rename:");
 

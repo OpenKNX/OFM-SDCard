@@ -132,6 +132,9 @@ MenuConfig::MenuOption SDCardModule::buildSdMenu()
         sdName.label = "SD-Name";
         sdName.type = MenuConfig::TextInput;
         sdName.key = "sd_name";
+        // Editor limits: 11 characters and only those validLabelChar() accepts for both FAT and exFAT.
+        sdName.ip[0] = 11;
+        sdName.dropdownOptions = {"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 !#$%&'()-@^_`{}~"};
         sdName.valueProvider = []() -> std::string { return std::string(sdCardModule.getVolumeLabel().c_str()); };
         sdName.onValueChanged = [](const MenuConfig::MenuOption&, const MenuValue& val) {
             sdCardModule.setVolumeLabel(val.getString().c_str());

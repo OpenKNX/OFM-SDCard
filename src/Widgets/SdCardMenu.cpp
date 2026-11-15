@@ -129,7 +129,7 @@ MenuConfig::MenuOption SDCardModule::buildSdMenu()
     // valueProvider reads the live label, onValueChanged relabels the card (charset-checked in the
     // API) and invalidates the info cache so the "Label" row refreshes.
     addRow(root, [](MenuOption& sdName) {
-        sdName.label = "SD-Name";
+        sdName.label = "SD name";
         sdName.type = MenuConfig::TextInput;
         sdName.key = "sd_name";
         // Editor limits: 11 characters and only those validLabelChar() accepts for both FAT and exFAT.
@@ -143,10 +143,10 @@ MenuConfig::MenuOption SDCardModule::buildSdMenu()
     });
 
     addRow(root, [](MenuOption& qformat) {
-        qformat.label = "Quick-Format";
+        qformat.label = "Quick format";
         qformat.type = MenuConfig::Toast;
         qformat.key = "sd_qformat";
-        qformat.toast = "Quick-Format ...";
+        qformat.toast = "Quick format...";
         qformat.confirmText = "Deletes the MBR. Format afterwards.";
     });
 
@@ -154,24 +154,24 @@ MenuConfig::MenuOption SDCardModule::buildSdMenu()
         format.label = "Format (exFAT)";
         format.type = MenuConfig::Toast;
         format.key = "sd_format";
-        format.toast = "Formatting ...";
+        format.toast = "Formatting...";
         // exFAT is the only format that BLOCKS (~4s, single SdFat call) -> warn that the device is
         // briefly not ready. Quick/Low-Level run non-blocking in the background (no such hint needed).
         format.confirmText = "All data will be lost. Busy for ~4 s.";
     });
 
     addRow(root, [](MenuOption& llf) {
-        llf.label = "Low-Level-Format";
+        llf.label = "Low-level format";
         llf.type = MenuConfig::Toast;
         llf.key = "sd_llf";
-        llf.toast = "Low-Level-Format ...";
+        llf.toast = "Low-level format...";
         llf.confirmText = "Zeroes the whole card. Takes a long time.";
     });
 
     // Partition-Info: a lazy submenu of read-only lines built on entry from the live MBR/GPT
     // table, so it renders ON the display (not just the console). Console stays via `sdc rpi`.
     addRow(root, [](MenuOption& rpi) {
-        rpi.label = "Partition-Info (GPT/MBR)";
+        rpi.label = "Partition info (GPT/MBR)";
         rpi.type = MenuConfig::Submenu;
         rpi.key = "sd_rpi";
         rpi.submenuBuilder = []() -> std::vector<MenuConfig::MenuOption> {

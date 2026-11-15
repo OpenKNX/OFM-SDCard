@@ -212,9 +212,9 @@ class SDCardModule : public OpenKNX::Module
     {
         switch (_fmtOp)
         {
-            case FmtOp::Quick: return "Quick-Format";
+            case FmtOp::Quick: return "Quick format";
             case FmtOp::ExFat: return "Format";
-            case FmtOp::LowLevel: return "Low-Level";
+            case FmtOp::LowLevel: return "Low-level";
             default: return "";
         }
     }

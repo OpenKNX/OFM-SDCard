@@ -1162,12 +1162,12 @@ void SDCardModule::_serviceFormat()
             if (ok)
             {
                 logInfoP("Quick-Format done (MBR cleared). Use 'format' next.");
-                _formatToast(FmtNote::Done, "Quick format done\nPlease format.");
+                _formatToast(FmtNote::Done, "Quick format done\nFormat the card");
             }
             else
             {
                 logErrorP("Quick-Format FAILED (MBR write error).");
-                _formatToast(FmtNote::Failed, "Quick format\nfailed!");
+                _formatToast(FmtNote::Failed, "Quick format\nfailed");
             }
             _closeCardAfterFormat(); // MBR gone -> no filesystem; park the card cleanly
             return;
@@ -1183,7 +1183,7 @@ void SDCardModule::_serviceFormat()
             if (!ok)
             {
                 logErrorP("Format FAILED. Supported: %s", FS_SUPPORT_FORMATS);
-                _formatToast(FmtNote::Failed, "Format\nfailed!");
+                _formatToast(FmtNote::Failed, "Format\nfailed");
                 _closeCardAfterFormat();
                 return;
             }
@@ -1203,7 +1203,7 @@ void SDCardModule::_serviceFormat()
                 _sdInfoGeneration++;
                 resetCardInfo();
                 logInfoP("SD-Card successfully mounted!");
-                _formatToast(FmtNote::Done, "Card formatted\n(exFAT).");
+                _formatToast(FmtNote::Done, "Card formatted\nexFAT");
                 info();
             }
             else
@@ -1266,7 +1266,7 @@ void SDCardModule::_serviceFormat()
                 {
                     logErrorP("Low-Level-Format: write error at sector %lu. Aborted.", (unsigned long)_fmtSector);
                     _fmtOp = FmtOp::None;
-                    _formatToast(FmtNote::Failed, "Low-level\nfailed!");
+                    _formatToast(FmtNote::Failed, "Low-level\nfailed");
                     _closeCardAfterFormat();
                     return;
                 }
@@ -1288,7 +1288,7 @@ void SDCardModule::_serviceFormat()
             {
                 _fmtOp = FmtOp::None;
                 logInfoP("Low-Level-Format done. Use 'format' next.");
-                _formatToast(FmtNote::Done, "Low-level done.\nPlease format.");
+                _formatToast(FmtNote::Done, "Low-level done\nFormat the card");
                 _closeCardAfterFormat(); // whole card zeroed -> no filesystem; park cleanly
             }
             return;

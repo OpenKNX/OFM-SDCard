@@ -243,9 +243,11 @@ class SDCardModule : public OpenKNX::Module
     uint32_t _fmtSector = 0;                             // Low-Level progress cursor
     uint32_t _fmtTotal = 0;                              // Low-Level total sector count
     uint32_t _fmtHeartbeat = 0;                          // last Low-Level heartbeat-log timestamp
+    uint8_t *_fmtZero = nullptr;                         // Low-Level zero chunk, held only while the wipe runs
+    uint8_t _fmtZeroSectors = 0;                         // sectors in _fmtZero
     bool _cardUnformatted = false;                       // card present but no usable filesystem (needs Format)
     static constexpr uint32_t FMT_SECTORS_PER_WRITE = 8; // Low-Level multi-block chunk (4 KB per write)
-    static constexpr uint32_t FMT_TICK_BUDGET_MS = 8;    // cap each Low-Level tick (~8 ms -> loop < 50 ms, no warning)
+    static constexpr uint32_t FMT_TICK_BUDGET_MS = 8;    // Low-Level: no new write once 8 ms of a tick have passed
     static constexpr uint32_t FMT_HEARTBEAT_MS = 5000;   // Low-Level: log a progress heartbeat every 5 s
     void _serviceFormat();                               // perform one incremental step of _fmtOp
     void _closeCardAfterFormat();                        // park the card (end _sd + SPI) after Quick/Low-Level

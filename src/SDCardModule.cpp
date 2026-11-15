@@ -40,7 +40,7 @@ SDCardModule::SDCardModule(uint8_t csPin) : _chipSelectPin(csPin), _sd(SDFAT_())
  * @brief Destroy the SDCardModule::SDCardModule object
  *
  */
-SDCardModule::~SDCardModule() {}
+SDCardModule::~SDCardModule() { free(_fmtZero); }
 
 /**
  * @brief Initialize the SD-Card Module
@@ -1144,6 +1144,11 @@ void SDCardModule::_formatToast(FmtNote note, const char *msg)
 // short and the router keeps running smoothly (KNX / display unaffected — no loop-time warning).
 void SDCardModule::_serviceFormat()
 {
+    if (_fmtZero && _fmtOp != FmtOp::LowLevel) // the wipe ended on any path: give its chunk back
+    {
+        free(_fmtZero);
+        _fmtZero = nullptr;
+    }
     switch (_fmtOp)
     {
         case FmtOp::None:
@@ -1231,15 +1236,33 @@ void SDCardModule::_serviceFormat()
 
             // Zero the card in short, time-bounded bursts using MULTI-BLOCK writes (writeSectors is
             // far faster than one-sector-at-a-time). We keep writing FMT_SECTORS_PER_WRITE-sector
-            // chunks only until FMT_TICK_BUDGET_MS elapsed, so a single tick stays ~15 ms regardless
-            // of card speed -> the router stays responsive.
-            static uint8_t zeroBuf[FMT_SECTORS_PER_WRITE * 512] = {0};
+            // chunks until FMT_TICK_BUDGET_MS elapsed: a tick takes about 9-11 ms, longer while the card is busy
+            // with the last write.
+            // The zero chunk lives on the heap while the wipe runs; one sector when the heap has no 4 KB block.
+            if (!_fmtZero)
+            {
+                _fmtZeroSectors = FMT_SECTORS_PER_WRITE;
+                _fmtZero = static_cast<uint8_t *>(calloc(_fmtZeroSectors, 512));
+                if (!_fmtZero)
+                {
+                    _fmtZeroSectors = 1;
+                    _fmtZero = static_cast<uint8_t *>(calloc(1, 512));
+                }
+                if (!_fmtZero)
+                {
+                    logErrorP("Low-Level-Format: no memory for the zero chunk. Aborted.");
+                    _fmtOp = FmtOp::None;
+                    _formatToast(FmtNote::Failed, "Low-level\nno memory");
+                    _closeCardAfterFormat();
+                    return;
+                }
+            }
             const uint32_t budgetStart = millis();
             while (_fmtSector < _fmtTotal && (uint32_t)(millis() - budgetStart) < FMT_TICK_BUDGET_MS)
             {
-                uint32_t chunk = FMT_SECTORS_PER_WRITE;
+                uint32_t chunk = _fmtZeroSectors;
                 if (_fmtSector + chunk > _fmtTotal) chunk = _fmtTotal - _fmtSector;
-                if (!_sd.card()->writeSectors(_fmtSector, zeroBuf, chunk))
+                if (!_sd.card()->writeSectors(_fmtSector, _fmtZero, chunk))
                 {
                     logErrorP("Low-Level-Format: write error at sector %lu. Aborted.", (unsigned long)_fmtSector);
                     _fmtOp = FmtOp::None;

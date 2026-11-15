@@ -5,6 +5,11 @@ with on-device management and a display widget. Entries are grouped by module ve
 to a commit in this repository.
 
 
+## 0.1.2: not released
+
+* Fix: `dirClose()` releases the directory snapshot buffer (up to 512 entries); `clear()` kept it
+* Fix: a throw inside `listDir()` leaves no partial snapshot allocated
+
 ## 0.1.1: 2026-10-23
 
 * Change: the SD card menu, the file browser, the format confirmations and toasts and the partition info are English; comments and log lines too

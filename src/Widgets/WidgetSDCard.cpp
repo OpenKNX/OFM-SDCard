@@ -167,7 +167,7 @@ void WidgetSDCard::drawSDInfo()
         {
             _pages = 1;
             _page = 0;
-            static const char *const kNoInfo[] = {"Could not read", "SD info."};
+            static const char *const kNoInfo[] = {"Card info", "not readable"};
             drawState(d, kNoInfo, 2);
         }
         _display->displayBuff();
@@ -178,13 +178,13 @@ void WidgetSDCard::drawSDInfo()
     _pages = 1;
     _page = 0;
 
-    static const char *const kRemoved[] = {"SD-CARD REMOVED.", "Please insert card."};
-    static const char *const kUnformatted[] = {"NOT FORMATTED", "Please format!"};
-    static const char *const kNoRead[] = {"SD-CARD INSERTED.", "Mounted.", "Could not read info!"};
-    static const char *const kNotMounted[] = {"SD-CARD INSERTED.", "Not mounted!", "Check card."};
-    static const char *const kMounting[] = {"SD-CARD MOUNTING.", "Please wait..."};
-    static const char *const kUnmounting[] = {"SD-CARD UNMOUNTING.", "Please wait..."};
-    static const char *const kError[] = {"SD-CARD ERROR!", "Check card!"};
+    static const char *const kRemoved[] = {"No SD card", "Insert a card"};
+    static const char *const kUnformatted[] = {"Not formatted", "Format the card"};
+    static const char *const kNoRead[] = {"Card mounted", "Card info", "not readable"};
+    static const char *const kNotMounted[] = {"Card inserted", "Not mounted", "Check the card"};
+    static const char *const kMounting[] = {"Mounting", "Please wait"};
+    static const char *const kUnmounting[] = {"Unmounting", "Please wait"};
+    static const char *const kError[] = {"Card error", "Check the card"};
     const char *const *lines = kRemoved;
     uint8_t count = 2;
     if (sdCardModule.isCardInserted())
@@ -215,7 +215,7 @@ void WidgetSDCard::drawFormat(Adafruit_SSD1306 &d)
     snprintf(b, sizeof(b), "%u.%02u%%", (unsigned)(pm / 100), (unsigned)(pm % 100));
     Ui::printCentred(d, 14, b, 2);
     Ui::bar(d, 0, 32, d.width(), (uint16_t)(pm / 10));
-    Ui::printCentred(d, 44, "FORMATTING");
+    Ui::printCentred(d, 44, "Formatting");
     Ui::printCentred(d, 54, sdCardModule.formatOpName());
 }
 

@@ -147,7 +147,7 @@ MenuConfig::MenuOption SDCardModule::buildSdMenu()
         qformat.type = MenuConfig::Toast;
         qformat.key = "sd_qformat";
         qformat.toast = "Quick-Format ...";
-        qformat.confirmText = "Deletes the MBR! Format afterwards.";
+        qformat.confirmText = "Deletes the MBR. Format afterwards.";
     });
 
     addRow(root, [](MenuOption& format) {
@@ -157,7 +157,7 @@ MenuConfig::MenuOption SDCardModule::buildSdMenu()
         format.toast = "Formatting ...";
         // exFAT is the only format that BLOCKS (~4s, single SdFat call) -> warn that the device is
         // briefly not ready. Quick/Low-Level run non-blocking in the background (no such hint needed).
-        format.confirmText = "ALL data lost! Device busy ~4 s.";
+        format.confirmText = "All data will be lost. Busy for ~4 s.";
     });
 
     addRow(root, [](MenuOption& llf) {
@@ -165,7 +165,7 @@ MenuConfig::MenuOption SDCardModule::buildSdMenu()
         llf.type = MenuConfig::Toast;
         llf.key = "sd_llf";
         llf.toast = "Low-Level-Format ...";
-        llf.confirmText = "Zeroes the WHOLE card! Takes a long time.";
+        llf.confirmText = "Zeroes the whole card. Takes a long time.";
     });
 
     // Partition-Info: a lazy submenu of read-only lines built on entry from the live MBR/GPT

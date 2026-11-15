@@ -118,7 +118,10 @@ namespace sd
         // Snapshot the directory once (capped at 512) so dirNext() serves one entry per FTC round-trip
         // without holding an FsFile open across ticks. listDir() uses the module's proven getName()+
         // Statistics() mechanism -> no FsFile crosses the module boundary, no stat on an openNextFile handle.
+        // a throw inside listDir() must not leave a partial snapshot allocated
+        struct Release { bool keep = false; ~Release() { if (!keep) std::vector<SdDirEntry>().swap(_dirEntries); } } release;
         sdCardModule.listDir((path && *path) ? path : "/", _dirEntries, 512);
+        release.keep = true;
         return true;
     }
     uint8_t IFileStore::dirNext(char *nameOut, uint16_t cap, uint32_t *sizeOut)
@@ -132,7 +135,7 @@ namespace sd
     }
     void IFileStore::dirClose()
     {
-        _dirEntries.clear();
+        std::vector<SdDirEntry>().swap(_dirEntries); // clear() would keep the buffer for up to 512 entries
         _dirIdx = 0;
     }
 

@@ -79,6 +79,23 @@ struct FileInfo
     bool isDir;
 };
 
+#ifdef ARDUINO_ARCH_ESP32
+/** @brief Holds the card for one call: the web server task and the loop share it, and SdFat has no lock of its own. */
+struct SdLock
+{
+    explicit SdLock(bool wait = true);
+    ~SdLock();
+    bool held; // false: SdLock(false) found the card in use
+    SdLock(const SdLock &) = delete;
+    SdLock &operator=(const SdLock &) = delete;
+};
+    #define SD_LOCK() SdLock sdLock_
+    #define SD_LOCK_OR_RETURN() SdLock sdLock_(false); if (!sdLock_.held) return // the loop never waits for the web
+#else
+    #define SD_LOCK() do { } while (0) // one task uses the card
+    #define SD_LOCK_OR_RETURN() do { } while (0)
+#endif
+
 struct SdDirEntry
 {
     String name;

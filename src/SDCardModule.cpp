@@ -122,6 +122,7 @@ void SDCardModule::setup(bool configured)
  */
 void SDCardModule::loop(bool configured)
 {
+    SD_LOCK_OR_RETURN();
     // Drive the non-blocking format first. While a format runs the card is unmounted and being
     // written sector-by-sector, so skip mount detection / browser / usage scan to avoid racing it
     // (a mid-format remount or scan would fight the sector writes). A write error aborts the format
@@ -175,6 +176,7 @@ void SDCardModule::showHelp()
  */
 bool SDCardModule::processCommand(const std::string command, bool diagnose)
 {
+    SD_LOCK();
 #ifndef OPENKNX_CONSOLE_DEV
     (void)command; // "sdc" console is part of OPENKNX_CONSOLE_DEV
     (void)diagnose;
@@ -836,6 +838,7 @@ void SDCardModule::_mount()
  */
 bool SDCardModule::Unmount(bool force)
 {
+    SD_LOCK();
     if (!force && !isMounted())
     {
         logDebugP("SD-Card is not mounted!");
@@ -864,6 +867,7 @@ bool SDCardModule::Unmount(bool force)
  */
 bool SDCardModule::Mount()
 {
+    SD_LOCK();
     if (isMounted())
     {
         logDebugP("SD-Card is already mounted!");
@@ -886,6 +890,7 @@ bool SDCardModule::Mount()
  */
 void SDCardModule::ReMount()
 {
+    SD_LOCK();
     Unmount(true);
     Mount();
 }
@@ -969,6 +974,7 @@ BootSectorInfo SDCardModule::getBootSectorInfo(int fsType)
  * */
 bool SDCardModule::rename(const char *oldPath, const char *newPath)
 {
+    SD_LOCK();
     if (!isMounted())
     {
         logErrorP("No SD card mounted!");
@@ -1694,6 +1700,7 @@ bool SDCardModule::info()
  */
 FSFILE SDCardModule::open(const char *path, const char *mode)
 {
+    SD_LOCK();
     if (!isMounted()) return FSFILE();
     oflag_t flags = 0;
     if (strcmp(mode, "r") == 0)
@@ -1754,6 +1761,7 @@ bool SDCardModule::createFile(const char *path)
  */
 bool SDCardModule::remove(const char *path)
 {
+    SD_LOCK();
     if (!isMounted()) return false;
     if (!_sd.remove(path))
     {
@@ -1773,6 +1781,7 @@ bool SDCardModule::remove(const char *path)
  */
 bool SDCardModule::exists(const char *path)
 {
+    SD_LOCK();
     if (!isMounted()) return false;
     return _sd.exists(path);
 }
@@ -1841,6 +1850,7 @@ size_t SDCardModule::append(const char *path, const uint8_t *buffer, size_t size
  */
 bool SDCardModule::mkdir(const char *path)
 {
+    SD_LOCK();
     if (!isMounted()) return false;
     return _sd.mkdir(path);
 }
@@ -1854,6 +1864,7 @@ bool SDCardModule::mkdir(const char *path)
  */
 bool SDCardModule::rmdir(const char *path)
 {
+    SD_LOCK();
     if (!isMounted()) return false;
     return _sd.rmdir(path);
 }
@@ -1907,6 +1918,7 @@ std::vector<String> SDCardModule::getFileList(const char *path, size_t maxEntrie
  */
 size_t SDCardModule::listDir(const char *path, std::vector<SdDirEntry> &out, size_t maxEntries)
 {
+    SD_LOCK();
     if (!isMounted()) return 0;
     // Single O(N) pass off SdFat's cached name/isDir/size; the old per-entry Statistics() was O(N*depth). Capped.
     const size_t base = out.size();
@@ -1965,6 +1977,7 @@ time_t SDCardModule::fatDateTimeToUnix(uint16_t fatDate, uint16_t fatTime)
  */
 bool SDCardModule::Statistics(const char *folder, const char *path, FileInfo &info)
 {
+    SD_LOCK();
     if (!isMounted()) return false;
     FSFILE file;
     String fullPath = String(folder) + "/" + String(path);
@@ -2306,6 +2319,7 @@ namespace
 
 String SDCardModule::getVolumeLabel()
 {
+    SD_LOCK();
     if (!isMounted()) return String();
 
     uint8_t buffer[512];
@@ -2388,6 +2402,7 @@ static bool validLabelChar(char c, bool exfat)
 
 bool SDCardModule::setVolumeLabel(const char *name)
 {
+    SD_LOCK();
     if (!isMounted() || name == nullptr) return false;
 
     const bool exfat = (_sd.fatType() == FAT_TYPE_EXFAT);
@@ -2485,6 +2500,7 @@ bool SDCardModule::setVolumeLabel(const char *name)
  */
 bool SDCardModule::readCardInfo(CardInfo &info)
 {
+    SD_LOCK();
     if (!isMounted())
     {
         logErrorP("No SD card mounted!");
@@ -2519,6 +2535,19 @@ bool SDCardModule::readCardInfo(CardInfo &info)
     return info.isValid = true;
 }
 
-SDCardModule sdCardModule(PIN_SDCARD_CS); // ToDo: CS Pin for SD card module ?, not obtain them from device configuration
+SDCardModule sdCardModule(PIN_SDCARD_CS);
+
+#ifdef ARDUINO_ARCH_ESP32
+static SemaphoreHandle_t sdMutex()
+{
+    static SemaphoreHandle_t m = xSemaphoreCreateRecursiveMutex();
+    return m;
+}
+SdLock::SdLock(bool wait) : held(xSemaphoreTakeRecursive(sdMutex(), wait ? portMAX_DELAY : 0) == pdTRUE) {}
+SdLock::~SdLock()
+{
+    if (held) xSemaphoreGiveRecursive(sdMutex());
+}
+#endif // ToDo: CS Pin for SD card module ?, not obtain them from device configuration
 
 #endif // OPENKNX_SDCARD

@@ -17,13 +17,14 @@ namespace sd
     static std::vector<SdDirEntry> _dirEntries; // one snapshot per listing (capped); FsFile stays inside the module
     static size_t _dirIdx = 0;
 
-    bool IFileStore::available() { return sdCardModule.isCardInserted() && sdCardModule.isMounted(); }
+    bool IFileStore::available() { SD_LOCK(); return sdCardModule.isCardInserted() && sdCardModule.isMounted(); }
     // A read (_src) or write (_sink) transfer is live. Both share the single SPI bus + a single static
     // handle each, so we serialize: one transfer per drive at a time (guards open()/sinkOpen()).
-    bool IFileStore::busy() { return (bool)_src || (bool)_sink; }
-    uint64_t IFileStore::totalBytes() { return sdCardModule.getSDCardSize(); }
+    bool IFileStore::busy() { SD_LOCK(); return (bool)_src || (bool)_sink; }
+    uint64_t IFileStore::totalBytes() { SD_LOCK(); return sdCardModule.getSDCardSize(); }
     uint64_t IFileStore::freeBytes()
     {
+        SD_LOCK();
         // Only the cached result; do NOT kick beginUsageScan() here. The module's incremental free-cluster
         // scan has proven to reboot on some large exFAT cards, and `df` must never crash -> total-only is fine
         // until the SD module's scan is fixed. 0 = unknown (the caller shows "total" without a free figure).
@@ -33,6 +34,7 @@ namespace sd
 
     int32_t IFileStore::open(const char *path)
     {
+        SD_LOCK();
         if (busy()) return -1; // another transfer holds a handle -> refuse (no cursor hijack)
         if (!sdCardModule.isMounted()) return -1;
         _src = sdCardModule.open(path, "r");
@@ -42,6 +44,7 @@ namespace sd
     // 0 only at true EOF; retry transient reads (never 0 mid-file -> no silent truncation). Bounded.
     uint8_t IFileStore::read(uint32_t offset, uint8_t *buf, uint8_t len)
     {
+        SD_LOCK();
         if (!_src || buf == nullptr || len == 0) return 0;
         if ((uint64_t)offset >= _src.fileSize()) return 0;
         if (_src.curPosition() != offset && !_src.seekSet(offset)) return 0;
@@ -53,14 +56,15 @@ namespace sd
         }
         return 0;
     }
-    void IFileStore::close() { _src.close(); }
+    void IFileStore::close() { SD_LOCK(); _src.close(); }
 
-    bool IFileStore::exists(const char *path) { return sdCardModule.exists(path); }
+    bool IFileStore::exists(const char *path) { SD_LOCK(); return sdCardModule.exists(path); }
 
     // Statistics() opens a module-local handle and stats it -> no FsFile crosses the module boundary
     // (the old dir-iteration corruption) and no transfer handle is touched. Statistics prepends "/".
     bool IFileStore::isDir(const char *path)
     {
+        SD_LOCK();
         if (path == nullptr || *path == '\0') return false;
         FileInfo info;
         const char *rel = (path[0] == '/') ? path + 1 : path;
@@ -69,6 +73,7 @@ namespace sd
 
     bool IFileStore::sinkOpen(const char *path, uint32_t offset, uint32_t sizeHint)
     {
+        SD_LOCK();
         if (busy()) return false; // another transfer holds a handle -> refuse (no concurrent write on one drive)
         if (!sdCardModule.isMounted()) return false;
         _sink = sdCardModule.open(path, offset ? "r+" : "w");
@@ -86,6 +91,7 @@ namespace sd
     }
     int IFileStore::sinkWrite(const uint8_t *buf, uint16_t len)
     {
+        SD_LOCK();
         if (!_sink || buf == nullptr || len == 0) return -1;
         const int w = (int)_sink.write(buf, len);
         if (w > 0 && _sink.curPosition() > _sinkWritten) _sinkWritten = _sink.curPosition();
@@ -93,6 +99,7 @@ namespace sd
     }
     int IFileStore::sinkWriteAt(uint32_t offset, const uint8_t *buf, uint16_t len)
     {
+        SD_LOCK();
         if (!_sink || buf == nullptr || len == 0) return -1;
         if (_sink.curPosition() != offset && !_sink.seekSet(offset)) return -1;
         const int w = (int)_sink.write(buf, len);
@@ -101,6 +108,7 @@ namespace sd
     }
     void IFileStore::sinkClose()
     {
+        SD_LOCK();
         // truncate a preAllocate'd file to the bytes actually written, so a short upload is detectable.
         if (_sink && _sinkWritten < _sink.fileSize())
         {
@@ -112,6 +120,7 @@ namespace sd
 
     bool IFileStore::dirOpen(const char *path)
     {
+        SD_LOCK();
         _dirEntries.clear();
         _dirIdx = 0;
         if (!sdCardModule.isCardInserted() || !sdCardModule.isMounted()) return false;
@@ -126,6 +135,7 @@ namespace sd
     }
     uint8_t IFileStore::dirNext(char *nameOut, uint16_t cap, uint32_t *sizeOut)
     {
+        SD_LOCK();
         if (cap == 0 || _dirIdx >= _dirEntries.size()) return 0;
         const SdDirEntry &e = _dirEntries[_dirIdx++];
         strncpy(nameOut, e.name.c_str(), cap - 1);
@@ -135,13 +145,14 @@ namespace sd
     }
     void IFileStore::dirClose()
     {
+        SD_LOCK();
         std::vector<SdDirEntry>().swap(_dirEntries); // clear() would keep the buffer for up to 512 entries
         _dirIdx = 0;
     }
 
-    bool IFileStore::remove(const char *path) { return sdCardModule.remove(path); }
-    bool IFileStore::mkdir(const char *path) { return sdCardModule.mkdir(path); }
-    bool IFileStore::rmdir(const char *path) { return sdCardModule.rmdir(path); }
-    bool IFileStore::rename(const char *oldPath, const char *newPath) { return sdCardModule.rename(oldPath, newPath); }
+    bool IFileStore::remove(const char *path) { SD_LOCK(); return sdCardModule.remove(path); }
+    bool IFileStore::mkdir(const char *path) { SD_LOCK(); return sdCardModule.mkdir(path); }
+    bool IFileStore::rmdir(const char *path) { SD_LOCK(); return sdCardModule.rmdir(path); }
+    bool IFileStore::rename(const char *oldPath, const char *newPath) { SD_LOCK(); return sdCardModule.rename(oldPath, newPath); }
 } // namespace sd
 #endif

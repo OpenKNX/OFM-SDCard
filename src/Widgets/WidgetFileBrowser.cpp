@@ -301,16 +301,24 @@ void WidgetFileBrowser::drawBrowser()
     _display->displayBuff();
 }
 
+/** @brief Copies a UTF-8 name for the display font: each multi-byte character becomes one '?', as SdFat showed it before. */
+static void displayName(char *out, size_t cap, const char *in)
+{
+    size_t n = 0;
+    for (const unsigned char *p = (const unsigned char *)in; *p && n + 1 < cap; p++)
+    {
+        if ((*p & 0xC0) == 0x80) continue; // continuation byte: its character is already one '?'
+        out[n++] = *p < 0x80 ? (char)*p : '?';
+    }
+    out[n] = '\0';
+}
+
 void WidgetFileBrowser::printName(Adafruit_SSD1306 &d, int16_t y, const char *name, bool dir, int16_t maxChars)
 {
     // A folder shows "name/"; the "/" is part of the text that is cut with "...".
-    if (!dir)
-    {
-        Ui::printCut(d, TEXT_X, y, name, maxChars);
-        return;
-    }
-    char b[24];
-    snprintf(b, sizeof(b), "%s/", name);
+    char b[64];
+    displayName(b, sizeof(b) - 1, name);
+    if (dir) strcat(b, "/");
     Ui::printCut(d, TEXT_X, y, b, maxChars);
 }
 
@@ -644,7 +652,9 @@ void WidgetFileBrowser::drawFileInfo()
     d->clearDisplay();
 
     // Title: file name (truncated) + separator.
-    std::string name = _selName;
+    char shown[64];
+    displayName(shown, sizeof(shown), _selName.c_str());
+    std::string name = shown;
     const int cells = W / 6;
     if (cells > 3 && (int)name.size() > cells)
         name = name.substr(0, (size_t)cells - 3) + "...";
@@ -705,7 +715,9 @@ void WidgetFileBrowser::drawConfirmDelete()
     d->print("Delete?");
     d->drawLine(0, 10, W, 10, WHITE);
 
-    std::string name = _selName;
+    char shown[64];
+    displayName(shown, sizeof(shown), _selName.c_str());
+    std::string name = shown;
     const int cells = W / 6;
     if (cells > 3 && (int)name.size() > cells)
         name = name.substr(0, (size_t)cells - 3) + "...";

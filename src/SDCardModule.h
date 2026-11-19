@@ -189,6 +189,10 @@ class SDCardModule : public OpenKNX::Module
     bool rmdir(const char *path);
     std::vector<String> getFileList(const char *path, size_t maxEntries = 512); // capped (no OOM)
     size_t listDir(const char *path, std::vector<SdDirEntry> &out, size_t maxEntries = 0);
+    /** @brief Calls @p fn for each child of @p path in one openNextFile() pass, without a snapshot; @p fn returns false to stop.
+     *  @p cut is set when the card went away or was remounted during the listing.
+     *  @return false when the card is not mounted, @p path does not open, or the listing was cut that way. */
+    bool forEachDir(const char *path, bool (*fn)(void *ctx, const char *name, bool isDir, uint64_t size), void *ctx, bool *cut = nullptr);
 
     inline const std::string name() { return SDCardModule_Display_Name; }
     inline const std::string version() { return MODULE_SDCard_Version; } // from library.json via versions.h (not the hard-coded define)
@@ -215,6 +219,7 @@ class SDCardModule : public OpenKNX::Module
     inline void resetCardInfo() { _cardInfo.isValid = false; }
     inline const CardInfo &getCardInfo() const { return _cardInfo; } // no copy: its Strings would be duplicated on the heap per call
     String getCardType(bool shortType = false);
+    const char *cardTypeName(bool shortType = false); // the same text without a String
     String getFsType();
     String getVolumeLabel();
     bool setVolumeLabel(const char *name); // in-place relabel (exFAT root entry / FAT boot sector)

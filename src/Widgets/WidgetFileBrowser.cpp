@@ -189,7 +189,7 @@ void WidgetFileBrowser::reload()
     // listing API. Leaves the cache empty when the card is not mounted (listDir no-ops).
     const std::string path = currentPath();
     _entries.clear();
-    sdCardModule.listDir(path.c_str(), _entries);
+    sdCardModule.listDir(path.c_str(), _entries, 256); // a display shows a few rows: no folder may take the heap
     _needsReload = false;
 
     // Keep the selection on a valid row; outside the root the ".." row comes first.

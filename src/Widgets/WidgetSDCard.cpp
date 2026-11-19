@@ -232,7 +232,7 @@ void WidgetSDCard::drawCard(Adafruit_SSD1306 &d, uint64_t freeBytes, uint64_t to
 void WidgetSDCard::drawDetails(Adafruit_SSD1306 &d, uint64_t usedBytes, uint64_t totalBytes)
 {
     Ui::header(d, _name.c_str(), _pages, 1);
-    Ui::row(d, 0, "Type", sdCardModule.getCardType(true).c_str(), kLabelCols);
+    Ui::row(d, 0, "Type", sdCardModule.cardTypeName(true), kLabelCols);
     Ui::row(d, 1, "Maker", sdCardModule.getCardInfo().manufacturer.c_str(), kLabelCols);
     Ui::row(d, 2, "Total", sdCardModule.formatSize(totalBytes), kLabelCols);
     Ui::row(d, 3, "Used", sdCardModule.formatSize(usedBytes), kLabelCols);

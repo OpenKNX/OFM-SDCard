@@ -118,6 +118,13 @@ namespace sd
         _sink.close();
     }
 
+    bool IFileStore::forEach(const char *path, bool (*fn)(void *ctx, const char *name, bool isDir, uint64_t size), void *ctx, bool *cut)
+    {
+        // no lock here: forEachDir() takes it per entry
+        if (!sdCardModule.isCardInserted()) return false;
+        return sdCardModule.forEachDir(path, fn, ctx, cut);
+    }
+
     bool IFileStore::dirOpen(const char *path)
     {
         SD_LOCK();
@@ -138,7 +145,8 @@ namespace sd
         SD_LOCK();
         if (cap == 0 || _dirIdx >= _dirEntries.size()) return 0;
         const SdDirEntry &e = _dirEntries[_dirIdx++];
-        strncpy(nameOut, e.name.c_str(), cap - 1);
+        const char *n = e.name.c_str();
+        strncpy(nameOut, n ? n : "", cap - 1);
         nameOut[cap - 1] = '\0';
         if (sizeOut) *sizeOut = e.isDir ? 0 : (uint32_t)e.size;
         return e.isDir ? 2 : 1;

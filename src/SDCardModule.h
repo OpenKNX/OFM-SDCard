@@ -101,6 +101,18 @@ struct SdDirEntry
     String name;
     bool isDir = false;
     uint64_t size = 0;
+    SdDirEntry() = default;
+    SdDirEntry(const SdDirEntry &) = default;
+    SdDirEntry &operator=(const SdDirEntry &) = default;
+    /** @brief noexcept: a growing vector then moves the names instead of copying each one through realloc. */
+    SdDirEntry(SdDirEntry &&o) noexcept : name(std::move(o.name)), isDir(o.isDir), size(o.size) {}
+    SdDirEntry &operator=(SdDirEntry &&o) noexcept
+    {
+        name = std::move(o.name);
+        isDir = o.isDir;
+        size = o.size;
+        return *this;
+    }
 };
 
 struct CardInfo
@@ -201,7 +213,7 @@ class SDCardModule : public OpenKNX::Module
 
     bool readCardInfo(CardInfo &cardInfo);
     inline void resetCardInfo() { _cardInfo.isValid = false; }
-    inline CardInfo getCardInfo() { return _cardInfo; }
+    inline const CardInfo &getCardInfo() const { return _cardInfo; } // no copy: its Strings would be duplicated on the heap per call
     String getCardType(bool shortType = false);
     String getFsType();
     String getVolumeLabel();

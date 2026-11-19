@@ -1932,16 +1932,86 @@ size_t SDCardModule::listDir(const char *path, std::vector<SdDirEntry> &out, siz
             file.close();
             break;
         }
-        file.getName(buffer, sizeof(buffer));
+        if (out.size() == out.capacity())
+        {
+            // The vector grows with operator new, which aborts on the RP2040 (no exceptions); malloc answers NULL instead.
+            const size_t want = out.capacity() ? out.capacity() * 2 : 16;
+            void *probe = malloc(want * sizeof(SdDirEntry));
+            if (!probe)
+            {
+                file.close();
+                logErrorP("listDir: no memory for more than %u entries of %s", (unsigned)(out.size() - base), path);
+                break;
+            }
+            free(probe);
+            out.reserve(want);
+        }
+        if (!file.getName(buffer, sizeof(buffer)) || !buffer[0]) // name longer than the buffer or unreadable: skipped
+        {
+            file.close();
+            continue;
+        }
         SdDirEntry entry;
         entry.name = buffer;
+        if (!entry.name.c_str() || entry.name.length() != strlen(buffer)) // String got no memory: buffer NULL, length 0
+        {
+            file.close();
+            logErrorP("listDir: no memory for the name after %u entries of %s", (unsigned)(out.size() - base), path);
+            break;
+        }
         entry.isDir = file.isDirectory();
         entry.size = entry.isDir ? 0 : (uint64_t)file.size();
         file.close();
-        out.push_back(entry);
+        out.push_back(std::move(entry));
     }
     dir.close();
     return out.size() - base;
+}
+
+bool SDCardModule::forEachDir(const char *path, bool (*fn)(void *ctx, const char *name, bool isDir, uint64_t size), void *ctx, bool *cut)
+{
+    FSFILE dir;
+    uint32_t gen;
+    {
+        SD_LOCK();
+        if (!isMounted()) return false;
+        dir = _sd.open((path && *path) ? path : "/");
+        if (!dir) return false;
+        gen = _sdInfoGeneration;
+    }
+    char buffer[256];
+    for (;;)
+    {
+        bool isDir = false;
+        uint64_t size = 0;
+        {
+            SD_LOCK(); // per entry, not for the whole listing: the loop waits at most for one entry
+            const bool live = isMounted() && _sdInfoGeneration == gen; // false: unmounted, formatted or remounted meanwhile
+            FSFILE file;
+            if (live) file = dir.openNextFile();
+            if (!file)
+            {
+                if (!live) // a gone volume: the handle is dropped, close() would sync through its reused memory
+                {
+                    if (cut) *cut = true;
+                    return false;
+                }
+                const bool failed = dir.getError() != 0; // a read error ends the walk like the last entry: card pulled, bad sector
+                if (failed && cut) *cut = true;
+                dir.close();
+                return !failed;
+            }
+            const bool named = file.getName(buffer, sizeof(buffer)) && buffer[0]; // longer than the buffer or unreadable: skipped
+            isDir = file.isDirectory();
+            size = isDir ? 0 : (uint64_t)file.size();
+            file.close();
+            if (!named) continue;
+        }
+        if (!fn(ctx, buffer, isDir, size)) break;
+    }
+    SD_LOCK();
+    if (isMounted() && _sdInfoGeneration == gen) dir.close(); // as above
+    return true;
 }
 
 /**
@@ -2248,12 +2318,15 @@ const char *SDCardModule::formatSize(uint64_t bytes)
  *
  * @return The type of the SD card.
  */
-String SDCardModule::getCardType(bool shortType)
+const char *SDCardModule::cardTypeName(bool shortType)
 {
     const char *cardTypeStr[] = {shortType ? "?" : "Unknown", shortType ? "SD" : "SD (Standard)",
                                  shortType ? "SDHC" : "SDHC (High Capacity)", shortType ? "SDXC" : "SDXC (Extended Capacity)"};
-    return cardTypeStr[_sd.card()->type()] ? cardTypeStr[_sd.card()->type()] : "Unknown Type";
+    const uint8_t t = _sd.card()->type();
+    return t < 4 ? cardTypeStr[t] : "Unknown Type";
 }
+
+String SDCardModule::getCardType(bool shortType) { return cardTypeName(shortType); }
 
 /**
  * @brief Get the file system type of the SD card.

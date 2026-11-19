@@ -28,6 +28,9 @@ namespace sd
         bool dirOpen(const char *path);
         uint8_t dirNext(char *nameOut, uint16_t cap, uint32_t *sizeOut = nullptr); // 0 end · 1 file · 2 dir
         void dirClose();
+        /** @brief One pass straight off the card, no snapshot and no cursor; @p fn returns false to stop.
+         *  @p cut is set when the card went away or was remounted during the listing. */
+        bool forEach(const char *path, bool (*fn)(void *ctx, const char *name, bool isDir, uint64_t size), void *ctx, bool *cut = nullptr);
         bool remove(const char *path);
         bool mkdir(const char *path);
         bool rmdir(const char *path);
